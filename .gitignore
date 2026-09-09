@@ -1,0 +1,10 @@
+bin/
+obj/
+dist/
+artifacts/
+.runtime/
+__pycache__/
+*.user
+.vs/
+.idea/
+.DS_Store

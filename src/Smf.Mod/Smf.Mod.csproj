@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net472</TargetFramework>
+    <AssemblyName>Smf.Mod</AssemblyName>
+    <RootNamespace>SimplyMoreFPS</RootNamespace>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Version>0.3.8</Version>
+  </PropertyGroup>
+  <Import Project="../../RimWorldRefs.props" />
+  <ItemGroup>
+    <ProjectReference Include="../Smf.Shared/Smf.Shared.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="AssetsTools.NET" Version="3.0.5" />
+    <Reference Include="System.Runtime.Serialization" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Rendering/Shaders/class-48.json" LogicalName="SimplyMoreFPS.Rendering.Shaders.class-48.json" />
+    <EmbeddedResource Include="Rendering/Shaders/class-142.json" LogicalName="SimplyMoreFPS.Rendering.Shaders.class-142.json" />
+  </ItemGroup>
+</Project>

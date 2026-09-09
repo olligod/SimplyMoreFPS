@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>Smf.Camera</AssemblyName>
+    <RootNamespace>Smf.Camera</RootNamespace>
+    <PublishAot>true</PublishAot>
+    <NativeLib>Shared</NativeLib>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">
+    <DefineConstants>$(DefineConstants);SMF_APPLE_ARM64_ABI</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">
+    <NativeLibrary Include="$(SmfCameraAbiObject)" Condition="'$(SmfCameraAbiObject)' != ''" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="CameraKernel.cs" />
+    <Compile Include="KernelContracts.cs" />
+    <Compile Include="../Smf.Shared/CameraMotion.cs" Link="Shared/CameraMotion.cs" />
+    <Compile Include="../Smf.Shared/CameraProfile.cs" Link="Shared/CameraProfile.cs" />
+    <Compile Include="../Smf.Shared/CameraMotionBounds.cs" Link="Shared/CameraMotionBounds.cs" />
+  </ItemGroup>
+  <Target Name="SmfCameraArm64Exports" BeforeTargets="LinkNative" DependsOnTargets="IlcCompile"
+          Condition="'$(RuntimeIdentifier)' == 'osx-arm64'">
+    <Error Condition="'$(SmfCameraAbiObject)' == '' or !Exists('$(SmfCameraAbiObject)')"
+           Text="Build the ARM64 camera ABI object with tools/build-renderer-macos.py." />
+    <PropertyGroup>
+      <ExportsFile>$(MSBuildProjectDirectory)/camera_kernel_arm64.exports</ExportsFile>
+    </PropertyGroup>
+  </Target>
+</Project>

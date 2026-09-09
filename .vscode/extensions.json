@@ -1,0 +1,8 @@
+{
+  "recommendations": [
+    "ms-dotnettools.csharp",
+    "ms-vscode.cpptools",
+    "ms-python.python",
+    "editorconfig.editorconfig"
+  ]
+}

@@ -1,0 +1,18 @@
+name: Mod compatibility
+description: SMF and another mod do not work together.
+labels: [compatibility]
+body:
+  - type: input
+    id: mod
+    attributes:
+      label: Other mod
+      description: Name and Workshop link.
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What goes wrong?
+      description: Include your platform, mod versions, and steps to reproduce it. Logs or screenshots help.
+    validations:
+      required: true

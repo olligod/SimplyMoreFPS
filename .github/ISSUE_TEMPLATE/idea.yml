@@ -1,0 +1,11 @@
+name: Idea
+description: A small improvement worth making.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help?
+      description: Explain the problem and your idea.
+    validations:
+      required: true

@@ -1,0 +1,57 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build mod",
+      "type": "shell",
+      "command": "python3 tools/build.py --native-directory dist/native --force",
+      "windows": {
+        "command": "python tools/build.py --native-directory dist/native --force"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$msCompile"
+      ],
+      "dependsOn": [
+        "Build native renderer"
+      ]
+    },
+    {
+      "label": "Build native renderer",
+      "type": "shell",
+      "command": "python3 tools/build-renderer-linux.py --output dist/native --tests --force",
+      "windows": {
+        "command": "python tools/build-renderer-windows.py --output dist/native --tests --force"
+      },
+      "osx": {
+        "command": "python3 tools/build-renderer-macos.py --output dist/native --tests --force"
+      },
+      "problemMatcher": [
+        "$gcc"
+      ]
+    },
+    {
+      "label": "Build solution",
+      "type": "shell",
+      "command": "dotnet build SimplyMoreFPS.sln",
+      "problemMatcher": [
+        "$msCompile"
+      ]
+    },
+    {
+      "label": "Managed tests",
+      "type": "shell",
+      "command": "dotnet run --project tests/Smf.Tests -c Release",
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": [
+        "$msCompile"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ModMetaData>
+  <name>Simply More FPS</name>
+  <author>Olli</author>
+  <packageId>olli.simplymorefps</packageId>
+  <modVersion>0.3.8</modVersion>
+  <supportedVersions>
+    <li>1.6</li>
+  </supportedVersions>
+  <modDependencies>
+    <li>
+      <packageId>brrainz.harmony</packageId>
+      <displayName>Harmony</displayName>
+      <steamWorkshopUrl>steam://url/CommunityFilePage/2009463077</steamWorkshopUrl>
+    </li>
+  </modDependencies>
+  <loadAfter>
+    <li>brrainz.harmony</li>
+  </loadAfter>
+  <description>Simply More FPS. Unlimited pow... FPS!
+Enable or disable it in mod settings. Requires Harmony.
+Safe to add or remove mid-save.</description>
+</ModMetaData>

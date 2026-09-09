@@ -1,0 +1,24 @@
+<Project>
+  <ItemGroup Condition="'$(UseRimWorldReferenceAssemblies)' != 'true'">
+    <Reference Include="$(RimWorldManaged)/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="$(RimWorldManaged)/UnityEngine*.dll" Private="false" />
+    <Reference Include="$(RimWorldManaged)/Unity.Collections.dll" Private="false" />
+    <Reference Include="$(RimWorldManaged)/Unity.Burst.dll" Private="false" />
+  </ItemGroup>
+  <ItemGroup Condition="'$(UseRimWorldReferenceAssemblies)' == 'true'">
+    <!-- Keep the same game references and net472 framework APIs in local and CI builds. -->
+    <PackageReference Include="Krafs.Rimworld.Ref" Version="1.6.4871" PrivateAssets="all" ExcludeAssets="compile;runtime" GeneratePathProperty="true" />
+    <Reference Include="$(PkgKrafs_Rimworld_Ref)/ref/net472/Assembly-CSharp.dll" Private="false" />
+    <Reference Include="$(PkgKrafs_Rimworld_Ref)/ref/net472/UnityEngine*.dll" Private="false" />
+    <Reference Include="$(PkgKrafs_Rimworld_Ref)/ref/net472/Unity.Collections.dll" Private="false" />
+    <Reference Include="$(PkgKrafs_Rimworld_Ref)/ref/net472/Unity.Burst.dll" Private="false" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+    <PackageReference Include="Krafs.Publicizer" Version="2.3.0" PrivateAssets="all" />
+    <PackageReference Include="Lib.Harmony" Version="2.4.2" ExcludeAssets="runtime" />
+    <Publicize Include="Assembly-CSharp" />
+    <DoNotPublicize Include="Assembly-CSharp:RimWorld.Planet.WorldGrid.OnPlanetLayerAdded" />
+    <DoNotPublicize Include="Assembly-CSharp:RimWorld.Planet.WorldGrid.OnPlanetLayerRemoved" />
+  </ItemGroup>
+</Project>

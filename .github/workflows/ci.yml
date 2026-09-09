@@ -1,0 +1,219 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_PROCESSOR_COUNT: 2
+  DOTNET_CLI_TELEMETRY_OPTOUT: 1
+
+jobs:
+  build:
+    name: Build and CPU tests (${{ matrix.host }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            host: windows
+            platform: windows
+            runtime: win-x64
+          - os: ubuntu-24.04
+            host: linux
+            platform: linux
+            runtime: linux-x64
+          - os: macos-26-intel
+            host: macos-intel
+            platform: macos
+            runtime: osx-universal
+          - os: macos-26
+            host: macos-arm
+            platform: macos
+            runtime: osx-universal
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Keep source bytes identical across hosts
+        run: git -c core.autocrlf=false checkout-index --all --force
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          # These packages need only Ubuntu's repositories.
+          sudo apt-get -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- update
+          sudo apt-get install -y clang zlib1g-dev libx11-dev libxext-dev libxi-dev libgl-dev libglx-dev mesa-common-dev
+      - name: Build whole solution using compile-only game references
+        run: dotnet build SimplyMoreFPS.sln -c Release -m:1 -p:UseRimWorldReferenceAssemblies=true
+      - name: Run managed tests
+        run: dotnet run --project tests/Smf.Tests -c Release --no-build
+      - name: Build renderer and run host CPU and ABI tests
+        run: python tools/build-renderer-${{ matrix.platform }}.py --output build --tests
+      - name: Stage release mod
+        run: python tools/build.py --reference-assemblies --runtime ${{ matrix.runtime }} --native-directory build --output staging/SimplyMoreFPS
+      - name: Package platform ZIP
+        run: python tools/package-release.py --mod staging/SimplyMoreFPS --runtimes ${{ matrix.runtime }} --output packages
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packages-${{ matrix.host }}
+          path: packages/
+          if-no-files-found: error
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: staged-${{ matrix.host }}
+          path: staging/SimplyMoreFPS/
+          if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: diagnostics-${{ matrix.host }}
+          path: |
+            build/logs/
+            build/build-receipt.json
+            build/tests/camera-result/
+            build/tests/CameraAbiTests
+            build/Native/osx-universal/libSmf.Camera.dylib
+          if-no-files-found: ignore
+
+  package:
+    name: Package all platforms
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: staged-*
+          path: staging
+      - name: Combine native builds
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import shutil
+
+          destination = Path('staging/staged-windows/Native')
+          for host, runtime in [('linux', 'linux-x64'), ('macos-arm', 'osx-universal')]:
+              shutil.copytree(Path('staging/staged-' + host) / 'Native' / runtime, destination / runtime)
+          PY
+      - name: Verify and package platform and universal ZIPs
+        run: python tools/package-release.py --mod staging/staged-windows --output packages
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: SimplyMoreFPS-packages
+          path: packages/
+          if-no-files-found: error
+
+  mac_package_tests:
+    name: Check final Mac package (${{ matrix.host }})
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-26-intel
+            host: macos-intel
+          - os: macos-26
+            host: macos-arm
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: SimplyMoreFPS-packages
+          path: packages
+      - name: Test the same universal ZIP on both Mac architectures
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import importlib.util
+          import json
+          import platform
+          import shutil
+          import zipfile
+
+          archives = list(Path('packages').glob('*-universal.zip'))
+          archives = [path for path in archives if not path.name.endswith('-osx-universal.zip')]
+          assert len(archives) == 1, archives
+          archive_hash = hashlib.sha256(archives[0].read_bytes()).hexdigest()
+          checksums = {name: digest for digest, name in
+                       (line.split() for line in Path('packages/SHA256SUMS.txt').read_text().splitlines())}
+          assert archive_hash == checksums[archives[0].name]
+          with zipfile.ZipFile(archives[0]) as archive:
+              archive.extractall('extracted')
+
+          # Run the existing CPU tests against the kernel actually shipped in the ZIP.
+          spec = importlib.util.spec_from_file_location('mac_build', 'tools/build-renderer-macos.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          output = Path('mac-package-tests').resolve()
+          (output / 'logs').mkdir(parents=True)
+          receipt = {'steps': [], 'archive': str(archives[0]), 'archiveSha256': archive_hash,
+                     'host': platform.machine()}
+          build = module.Build(output, Path.cwd(), {name: shutil.which(name) for name in module.TOOLS}, receipt)
+          build.kernel = Path('extracted/SimplyMoreFPS/Native/osx-universal/libSmf.Camera.dylib').resolve()
+          receipt['kernelSha256'] = hashlib.sha256(build.kernel.read_bytes()).hexdigest()
+          try:
+              build.find_compiler()
+              build.run_tests(platform.machine())
+          finally:
+              (output / 'receipt.json').write_text(json.dumps(receipt, indent=2) + '\n')
+          PY
+          python tools/check-macos-loading.py --native extracted/SimplyMoreFPS/Native/osx-universal --output security-macos
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: always()
+        with:
+          name: final-package-checks-${{ matrix.host }}
+          path: |
+            mac-package-tests/logs/
+            mac-package-tests/receipt.json
+            mac-package-tests/tests/camera-result/
+            security-macos/result.json
+          if-no-files-found: error
+
+  checks:
+    name: Build checks
+    if: always()
+    needs: [build, package, mac_package_tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every build and package job to succeed
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          MAC_PACKAGE_RESULT: ${{ needs.mac_package_tests.result }}
+        run: test "$BUILD_RESULT" = success && test "$PACKAGE_RESULT" = success && test "$MAC_PACKAGE_RESULT" = success

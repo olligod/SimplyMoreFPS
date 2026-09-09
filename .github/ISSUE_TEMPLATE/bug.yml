@@ -1,0 +1,33 @@
+name: Bug
+description: Something is not working.
+labels: [bug]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include what you expected and how to reproduce it.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: SMF and RimWorld versions
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Windows
+        - Linux
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs, screenshots, or other mods
+      description: Attach Player.log if possible. Mention other mods involved.

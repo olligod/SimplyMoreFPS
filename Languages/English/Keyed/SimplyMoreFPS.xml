@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LanguageData>
+  <SMF_SettingsTitle>Simply More FPS</SMF_SettingsTitle>
+  <SMF_Enabled>Enabled</SMF_Enabled>
+  <SMF_EnabledTip>Keep your camera smooth even when the game lags.</SMF_EnabledTip>
+  <SMF_TpsBoost>TPS boost</SMF_TpsBoost>
+  <SMF_TpsBoostTip>Give the simulation more time without lowering camera FPS.</SMF_TpsBoostTip>
+  <SMF_FpsTarget>Game FPS target</SMF_FpsTarget>
+  <SMF_FpsTargetTip>Lower target = more time for simulation. You keep full camera FPS, but menus and animations may update less often.</SMF_FpsTargetTip>
+  <SMF_TpsBoostUnavailable>TPS boost couldn't start. See the game log for details.</SMF_TpsBoostUnavailable>
+  <SMF_ShowMeter>Show FPS/TPS</SMF_ShowMeter>
+  <SMF_MeterFormat>{0} FPS / {1} TPS</SMF_MeterFormat>
+</LanguageData>
