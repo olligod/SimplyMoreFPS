@@ -1,4 +1,5 @@
 #include "camera_bridge.h"
+#include "../common/camera_worker.h"
 #include <atomic>
 #include <cmath>
 #include <cstring>
@@ -7,12 +8,7 @@
 namespace camera_bridge {
     namespace {
 
-        // Bits of smf_bridge_main_state::flags.
-        constexpr uint32_t flag_eligible = 1;
-        constexpr uint32_t flag_owned = 2;
-        constexpr uint32_t flag_motion_blocked = 4;
-        constexpr uint32_t flag_text_captured = 8;
-        constexpr uint32_t flag_search_focused = 16;
+        using namespace camera_worker_protocol;
 
         smf_bridge_status empty_status() {
             smf_bridge_status s{};
@@ -78,15 +74,6 @@ namespace camera_bridge {
                 is_finite(t.target_root_size) && t.target_root_size > 0;
         }
 
-        bool valid_pose(const smf_camera_pose& p) {
-            return p.version == 2 && p.size == sizeof(p) && p.session && p.epoch && p.pose_sequence && p.map_id >= 0 &&
-                !p.reserved && !(p.pan_flags & ~SMF_CAMERA_PAN_COMPLETED) &&
-                p.active_pan_id <= INT64_MAX && p.finished_pan_id <= INT64_MAX &&
-                (!p.pan_flags || p.finished_pan_id) &&
-                is_finite(p.x) && is_finite(p.z) && is_finite(p.root_size) && p.root_size > 0 &&
-                is_finite(p.projection_half_height) && p.projection_half_height > 0;
-        }
-
         struct kernel_api {
             void* module = nullptr;
             decltype(&smf_camera_create) create = nullptr;
@@ -126,58 +113,29 @@ namespace camera_bridge {
 
         struct worker_state {
             kernel_api api;
-            smf_bridge_main main{};
-            smf_bridge_status status = empty_status();
-            smf_camera_pose pose{};
-            smf_bridge_desired prepared{};
-            bool have_main = false;
-            bool previous_middle = false;
-            bool prepared_valid = false;
-            bool prepared_publish = false;
-            double previous_x = 0;
-            double previous_y = 0;
-            double seed_size = 0;
-            uint64_t input_sequence = 0;
-            uint64_t settings_revision = 0;
+            camera_worker_protocol::worker camera;
             int32_t keys[8]{};
 
             // Never waits on the mailbox; a busy main side is counted instead.
             void report() {
-                status.fence_epoch = fence.load(std::memory_order_acquire);
-                status.main_thread = main_thread.load();
+                camera.status.fence_epoch = fence.load(std::memory_order_acquire);
+                camera.status.main_thread = main_thread.load();
 
                 try_lock lock(outgoing_gate);
                 if (lock) {
-                    outgoing = status;
+                    outgoing = camera.status;
                 } else {
-                    status.mailbox_drops++;
+                    camera.status.mailbox_drops++;
                 }
             }
 
             // A camera fault must not make the compositor detach its layers, hence S_FALSE.
             HRESULT fault(int32_t error) {
-                fault_epoch.store(have_main ? main.state.epoch : 0, std::memory_order_release);
-                status.state = bridge_fault;
-                status.result = error;
-                previous_middle = false;
-                prepared_valid = false;
-                prepared_publish = false;
-                status.desired = {};
+                fault_epoch.store(camera.have_main ? camera.main.state.epoch : 0, std::memory_order_release);
+                camera.fault(error);
 
                 report();
                 return S_FALSE;
-            }
-
-            smf_camera_input next_input(uint64_t epoch, double seconds) {
-                smf_camera_input input{};
-                input.version = 2;
-                input.size = sizeof(input);
-                input.epoch = epoch;
-                input.sequence = ++input_sequence;
-                input.settings_revision = settings_revision;
-                input.monotonic_seconds = seconds;
-
-                return input;
             }
         };
 
@@ -222,59 +180,43 @@ namespace camera_bridge {
             return camera_control::held(keys[index]) || camera_control::held(keys[index + 1]);
         }
 
-        smf_bridge_desired desired_from(const smf_camera_pose& p) {
-            return {2, sizeof(smf_bridge_desired), p.epoch, p.pose_sequence, p.map_id, 0, p.x, p.z, p.root_size,
-                p.projection_half_height, p.active_pan_id, p.finished_pan_id, p.pan_flags, 0};
-        }
-
     }
 
     void worker_ready(uint32_t thread, int64_t frequency) {
-        worker.status.worker_thread = thread;
-        worker.status.qpc_frequency = frequency;
-        worker.status.state = bridge_waiting;
+        worker.camera.status.worker_thread = thread;
+        worker.camera.status.qpc_frequency = frequency;
+        worker.camera.status.state = bridge_waiting;
         worker.report();
     }
 
     HRESULT worker_prepare(bool focused, bool pointer_valid, double x, double y, bool middle, smf_bridge_desired& target) {
         worker_state& w = worker;
-        w.prepared_valid = false;
-        w.prepared_publish = false;
-        if (native_thread() != w.status.worker_thread || w.status.qpc_frequency <= 0) return E_UNEXPECTED;
+        auto& c = w.camera;
+        c.begin_prepare();
+        if (native_thread() != c.status.worker_thread || c.status.qpc_frequency <= 0) return E_UNEXPECTED;
 
         {
             try_lock lock(incoming_gate);
-            if (lock && has_incoming && (!w.have_main || incoming.publication > w.main.publication)) {
-                w.main = incoming;
-                w.have_main = true;
-                w.status.main_revision = incoming.publication;
-            }
+            if (lock && has_incoming) c.accept_main(incoming);
         }
 
         const uint64_t current_fence = fence.load(std::memory_order_acquire);
-        if (!w.have_main || !current_fence || w.main.state.epoch != current_fence) {
-            w.status.state = bridge_waiting;
-            w.status.desired = {};
-            w.previous_middle = false;
+        if (!c.matches_epoch(current_fence)) {
+            c.status.state = bridge_waiting;
+            c.withdraw();
             w.report();
             return S_FALSE;
         }
 
-        const smf_bridge_main_state& main = w.main.state;
-        w.status.applied_sequence = main.applied_sequence;
+        const smf_bridge_main_state& main = c.main.state;
+        c.status.applied_sequence = main.applied_sequence;
 
         if ((main.flags & flag_eligible) == 0) {
             // Not eligible: hand main's own pose back rather than resetting from the source image.
-            w.status.state = bridge_waiting;
-            w.status.desired = {};
-            w.previous_middle = false;
+            c.status.state = bridge_waiting;
+            c.withdraw();
 
-            if (main.map_id >= 0 && is_finite(main.x) && is_finite(main.z) && is_finite(main.root_size) && main.root_size > 0 &&
-                is_finite(main.projection_half_height) && main.projection_half_height > 0) {
-                w.prepared = {2, sizeof(smf_bridge_desired), current_fence, 0, main.map_id, 0, main.x, main.z,
-                    main.root_size, main.projection_half_height, 0, 0, 0, 0};
-                w.prepared_valid = true;
-                target = w.prepared;
+            if (c.prepare_main_pose(current_fence, target)) {
                 w.report();
                 return S_OK;
             }
@@ -290,167 +232,91 @@ namespace camera_bridge {
         }
 
         if (FAILED(loaded)) return w.fault(loaded);
-        if (!resolve_bindings(w.main.bindings, w.keys)) return w.fault(E_NOTIMPL);
+        if (!resolve_bindings(c.main.bindings, w.keys)) return w.fault(E_NOTIMPL);
 
         const int64_t qpc = now();
-        const double seconds = double(qpc) / w.status.qpc_frequency;
+        const double seconds = double(qpc) / c.status.qpc_frequency;
 
-        if (!w.status.kernel_session || w.status.worker_epoch != current_fence) {
-            smf_camera_init init{2, sizeof(smf_camera_init), current_fence, main.map_id, 0,
-                main.x, main.z, main.root_size, seconds};
+        const int32_t adopted = c.adopt_epoch(w.api, current_fence, seconds, E_INVALIDARG);
+        if (adopted != SMF_CAMERA_OK) return w.fault(adopted);
 
-            const int32_t result = w.status.kernel_session
-                ? w.api.adopt(w.status.kernel_session, &init, sizeof(init), &w.main.settings, sizeof(w.main.settings), &w.pose, sizeof(w.pose))
-                : w.api.create(&init, sizeof(init), &w.main.settings, sizeof(w.main.settings), &w.pose, sizeof(w.pose));
-            if (result != SMF_CAMERA_OK) return w.fault(result);
-            if (!valid_pose(w.pose)) return w.fault(E_INVALIDARG);
-
-            w.status.kernel_session = w.pose.session;
-            w.status.worker_epoch = current_fence;
-            w.status.seed_sequence = w.pose.pose_sequence;
-            w.status.state = bridge_seed;
-            w.status.result = S_OK;
-            w.status.adopts++;
-            w.input_sequence = 0;
-            w.settings_revision = w.pose.settings_revision;
-            w.seed_size = w.pose.root_size;
-            w.previous_middle = false;
-        }
-
-        if (w.status.state == bridge_fault) {
+        if (c.status.state == bridge_fault) {
             w.report();
             return S_FALSE;
         }
 
-        if (main.map_id != w.pose.map_id || main.applied_sequence > w.pose.pose_sequence) return w.fault(E_INVALIDARG);
+        const int32_t configured = c.configure(w.api, current_fence, E_INVALIDARG);
+        if (configured != SMF_CAMERA_OK) return w.fault(configured);
 
-        if (w.main.settings.revision != w.settings_revision) {
-            const int32_t result = w.api.configure(w.status.kernel_session, current_fence,
-                &w.main.settings, sizeof(w.main.settings), &w.pose, sizeof(w.pose));
-            if (result != SMF_CAMERA_OK) return w.fault(result);
-            if (!valid_pose(w.pose)) return w.fault(E_INVALIDARG);
-
-            w.settings_revision = w.pose.settings_revision;
-            w.status.configs++;
-        }
-
-        const bool acknowledged = (main.flags & flag_owned) != 0 && main.applied_sequence >= w.status.seed_sequence;
-        if (acknowledged) {
+        if (c.acknowledged()) {
             const bool blocked = !focused || !pointer_valid || (main.flags & flag_motion_blocked) != 0;
             const bool keyboard_blocked = blocked || (main.flags & (flag_text_captured | flag_search_focused)) != 0;
 
-            smf_camera_input input = w.next_input(current_fence, seconds);
-            // The trajectory arrives in the same publication as the settings, so the two stay consistent.
-            input.trajectory = w.main.trajectory;
-            input.pointer_x = pointer_valid ? x : 0;
-            input.pointer_y = pointer_valid ? y : 0;
-
-            if (blocked) input.flags |= SMF_CAMERA_MOTION_BLOCKED;
+            smf_camera_input input = c.motion_input(current_fence, seconds, blocked, pointer_valid, x, y);
             if (!keyboard_blocked) {
                 input.pan_x = pair_held(w.keys, 6) ? 1 : pair_held(w.keys, 4) ? -1 : 0;
                 input.pan_z = pair_held(w.keys, 2) ? -1 : pair_held(w.keys, 0) ? 1 : 0;
             }
             if (!blocked && camera_control::held(XK_Shift_L)) input.flags |= SMF_CAMERA_FAST_PAN;
-            if (!blocked) {
-                if (middle && w.previous_middle) {
-                    input.drag_x = x - w.previous_x;
-                    input.drag_y = y - w.previous_y;
-                }
-                if (!middle && w.previous_middle) input.flags |= SMF_CAMERA_MIDDLE_RELEASED_PULSE;
-            }
-
-            w.previous_middle = !blocked && middle;
-            w.previous_x = x;
-            w.previous_y = y;
+            c.pointer_motion(blocked, x, y, middle, input);
 
             camera_control::prepare(current_fence, blocked, x, y, input);
 
-            const int32_t result = w.api.step(w.status.kernel_session, &input, sizeof(input), &w.pose, sizeof(w.pose));
+            const int32_t result = c.step(w.api, input, qpc, blocked, keyboard_blocked, middle, E_INVALIDARG);
             if (result != SMF_CAMERA_OK) return w.fault(result);
-            if (!valid_pose(w.pose)) return w.fault(E_INVALIDARG);
-
-            w.status.steps++;
-            w.status.step_qpc = qpc;
-            w.status.state = blocked ? bridge_blocked : bridge_owned;
-            w.status.flags = (keyboard_blocked ? 1u : 0u) | (blocked ? 2u : 0u) | (middle ? 4u : 0u);
         } else {
-            // Until main acknowledges the seed only the kernel clock advances: no input, no
-            // trajectory, no clamping, so the seed pose cannot move before main has applied it.
-            smf_camera_input idle = w.next_input(current_fence, seconds);
-            idle.flags = SMF_CAMERA_CLOCK_ONLY;
-
-            const int32_t result = w.api.step(w.status.kernel_session, &idle, sizeof(idle), &w.pose, sizeof(w.pose));
+            const int32_t result = c.wait_for_seed(w.api, current_fence, seconds, E_INVALIDARG, E_NOTIMPL);
             if (result != SMF_CAMERA_OK) return w.fault(result);
-            if (!valid_pose(w.pose)) return w.fault(E_INVALIDARG);
-            if (w.pose.root_size != w.seed_size || w.pose.pose_sequence != w.status.seed_sequence) return w.fault(E_NOTIMPL);
-
-            w.status.state = bridge_seed;
-            w.previous_middle = false;
         }
 
         if (fence.load(std::memory_order_acquire) != current_fence) {
-            w.status.desired = {};
-            w.previous_middle = false;
+            c.withdraw();
             w.report();
             return S_FALSE;
         }
 
-        w.prepared = desired_from(w.pose);
-        w.prepared_valid = true;
-        w.prepared_publish = true;
-        target = w.prepared;
+        c.prepare_pose(target);
         return S_OK;
     }
 
     void worker_committed(HRESULT result) {
         worker_state& w = worker;
-        if (native_thread() != w.status.worker_thread) return;
+        auto& c = w.camera;
+        if (native_thread() != c.status.worker_thread) return;
 
         if (FAILED(result)) {
             w.fault(result);
             return;
         }
 
-        if (result == S_OK && w.prepared_valid && w.prepared.epoch == fence.load(std::memory_order_acquire)) {
-            w.status.commit_sequence++;
-            w.status.commit_qpc = now();
-            w.status.desired = w.prepared_publish ? w.prepared : smf_bridge_desired{};
+        if (result == S_OK && c.prepared_valid && c.prepared.epoch == fence.load(std::memory_order_acquire)) {
+            c.committed(now());
         }
 
-        w.prepared_valid = false;
-        w.prepared_publish = false;
+        c.begin_prepare();
         w.report();
     }
 
     void worker_reused_pose() {
         worker_state& w = worker;
-        if (native_thread() != w.status.worker_thread) return;
+        auto& c = w.camera;
+        if (native_thread() != c.status.worker_thread) return;
 
-        if (w.prepared_valid && w.prepared.epoch == fence.load(std::memory_order_acquire)) {
-            w.status.desired = w.prepared_publish ? w.prepared : smf_bridge_desired{};
+        if (c.prepared_valid && c.prepared.epoch == fence.load(std::memory_order_acquire)) {
+            c.publish_prepared();
         }
 
-        w.prepared_valid = false;
-        w.prepared_publish = false;
+        c.begin_prepare();
         w.report();
     }
 
     void worker_removed() {
         worker_state& w = worker;
-        if (native_thread() != w.status.worker_thread) return;
+        auto& c = w.camera;
+        if (native_thread() != c.status.worker_thread) return;
 
         camera_control::clear();
-        if (w.status.kernel_session && w.api.release) {
-            smf_camera_pose output{};
-            const int32_t result = w.api.release(w.status.kernel_session, &output, sizeof(output));
-            w.status.result = result;
-            if (result == 0) w.status.kernel_session = 0;
-        }
-
-        w.status.desired = {};
-        w.prepared_valid = false;
-        w.previous_middle = false;
-        w.status.state = bridge_dormant;
+        c.removed(w.api);
         w.report();
     }
 

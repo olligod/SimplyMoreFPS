@@ -6,11 +6,8 @@ using Verse;
 
 namespace SimplyMoreFPS.Compatibility;
 
-// One file per supported mod, bound by reflection so this assembly never references theirs.
-// To add one: new file named after the mod with its package id as a const, bind through
-// RequireType/Field/Getter/RequireMethod, register it below, and wrap binding errors in an
-// InvalidOperationException that names the package id. Mods integrating from their side use
-// the public API in ../API instead.
+// Each mod has its own folder and binds by reflection, without an assembly reference.
+// Keep shared binding helpers here; external integrations use ../API.
 // Each hook kind binds on its first use, so a broken mod only takes down the hook it feeds:
 // camera providers on the first Resolve, world overlays when the raster hooks install,
 // geometry (VehicleMapFramework, AsAboveSoBelow) on its first query.
@@ -30,11 +27,19 @@ internal static class Compat
 
     internal static void RegisterWorldOverlays()
     {
-        if (!UnityData.IsInMainThread) throw new InvalidOperationException("World overlay binding requires Unity main.");
-        if (worldOverlaysRegistered) return;
+        if (!UnityData.IsInMainThread)
+            throw new InvalidOperationException("World overlay binding requires Unity main.");
+        if (worldOverlaysRegistered)
+            return;
 
         InteractionBubbles.Register();
         worldOverlaysRegistered = true;
+    }
+
+    internal static void RegisterGeometryProviders()
+    {
+        VehicleMapFramework.RegisterGeometry();
+        AsAboveSoBelow.RegisterGeometry();
     }
 
     internal static Type RequireType(string name)

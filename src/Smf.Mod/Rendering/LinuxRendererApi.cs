@@ -1,7 +1,5 @@
 #nullable disable
 using System;
-using System.Collections.Generic;
-using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
 using SimplyMoreFPS.Rendering.Lifecycle;
@@ -12,9 +10,6 @@ namespace SimplyMoreFPS.Rendering;
 // Unity main-thread client for the Linux renderer; same session ABI as Windows plus a native clock and quit fence.
 public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, IProcessExitFence, IPresentationTelemetry
 {
-    // Loaded modules stay mapped until the process exits.
-    private static readonly Dictionary<string, NativeModule> Modules = new Dictionary<string, NativeModule>(StringComparer.Ordinal);
-
     private readonly int mainThread = Thread.CurrentThread.ManagedThreadId;
     private readonly ulong window;
     private readonly StartFn startSession;
@@ -30,17 +25,23 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
     private readonly JoinedFn pollJoined;
     private readonly ClockFn nativeNow;
     private readonly QuitFn quit;
-    private readonly Dictionary<ulong, ulong> warmupMarkers = new Dictionary<ulong, ulong>();
+    private readonly RendererAcknowledgementState acknowledgements = new RendererAcknowledgementState();
     private ulong startedSession;
     private ulong fenceDelivered;
     private ulong fencePublished;
-    private Command? pending;
-    private Evidence routingEvidence;
-    private ulong routingFrame;
 
-    public IntPtr RenderEvent { get; }
-    public long ClockFrequency { get; }
-    public ulong PreviousSession { get; }
+    public IntPtr RenderEvent
+    {
+        get;
+    }
+    public long ClockFrequency
+    {
+        get;
+    }
+    public ulong PreviousSession
+    {
+        get;
+    }
 
     public static int FindOriginalWindow(string libraryPath, out ulong unityWindow)
     {
@@ -56,14 +57,7 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
         AssertAbi();
         window = unityWindow;
 
-        string path = Path.GetFullPath(libraryPath);
-        if (!File.Exists(path)) throw new FileNotFoundException("Renderer library is missing.", path);
-
-        if (!Modules.TryGetValue(path, out NativeModule module))
-        {
-            module = NativeModule.Open(path);
-            Modules.Add(path, module);
-        }
+        NativeModule module = NativeModule.Open(libraryPath);
 
         startSession = module.Bind<StartFn>("smf_session_start");
         sendCommand = module.Bind<CommandFn>("smf_session_command");
@@ -112,7 +106,8 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
     public void FenceProcessExit()
     {
         CheckMain();
-        if (quit() != 0) throw new InvalidOperationException("Linux native process-exit fence failed.");
+        if (quit() != 0)
+            throw new InvalidOperationException("Linux native process-exit fence failed.");
     }
 
     public int Submit(Command command, SceneContext context)
@@ -121,12 +116,13 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
         if (command.Session != startedSession)
         {
             int started = startSession(window, command.Session);
-            if (started != 0) return started;
+            if (started != 0)
+                return started;
 
             startedSession = command.Session;
             fenceDelivered = 0;
             fencePublished = 0;
-            warmupMarkers.Clear();
+            acknowledgements.ClearWarmupMarkers();
         }
 
         if (command.Operation == Operation.PrepareHiddenGeneration || command.Operation == Operation.PrepareReplacementGeneration)
@@ -135,7 +131,8 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
             if (command.ContentRevision > fencePublished)
             {
                 int published = publishFence(command.Session, command.ContentRevision);
-                if (published != 0) return published;
+                if (published != 0)
+                    return published;
                 fencePublished = command.ContentRevision;
             }
         }
@@ -163,9 +160,7 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
         int result = sendCommand(ref packet, 88);
         if (result == 0)
         {
-            pending = command;
-            routingEvidence = Evidence.None;
-            routingFrame = 0;
+            acknowledgements.Accept(command);
         }
 
         return result;
@@ -174,11 +169,14 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
     public int PublishWorldFence(WorldFence fence)
     {
         CheckMain();
-        if (fence.Session != startedSession) return 1;
-        if (fence.ContentRevision <= fencePublished) return 0;
+        if (fence.Session != startedSession)
+            return 1;
+        if (fence.ContentRevision <= fencePublished)
+            return 0;
 
         int result = publishFence(fence.Session, fence.ContentRevision);
-        if (result == 0) fencePublished = fence.ContentRevision;
+        if (result == 0)
+            fencePublished = fence.ContentRevision;
         return result;
     }
 
@@ -186,11 +184,14 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
     {
         CheckMain();
         fence = default;
-        if (startedSession == 0) return 1;
+        if (startedSession == 0)
+            return 1;
 
         int result = ReadStatus(out StatusPacket state);
-        if (result != 0) return result;
-        if (state.ContentAcknowledged == 0 || state.ContentAcknowledged <= fenceDelivered) return 1;
+        if (result != 0)
+            return result;
+        if (state.ContentAcknowledged == 0 || state.ContentAcknowledged <= fenceDelivered)
+            return 1;
 
         fenceDelivered = state.ContentAcknowledged;
         fence = new WorldFence { Session = state.Session, ContentRevision = fenceDelivered };
@@ -201,81 +202,69 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
     {
         CheckMain();
         acknowledgement = default;
-        if (!pending.HasValue) return 1;
+        if (!acknowledgements.Pending.HasValue)
+            return 1;
 
-        Command wanted = pending.Value;
+        Command wanted = acknowledgements.Pending.Value;
         if (wanted.Operation == Operation.StopWorker)
         {
             int joinResult = pollJoined(wanted.Session);
-            if (joinResult != 0) return joinResult;
+            if (joinResult != 0)
+                return joinResult;
         }
 
         var packet = new AckPacket { Size = 80, Version = 1 };
         int result = readAck(wanted.Session, wanted.Serial, ref packet, 80);
-        if (result != 0) return result;
-        if (packet.Size != 80 || packet.Version != 1 || packet.Session != wanted.Session || packet.Serial != wanted.Serial ||
-            packet.Generation != wanted.Generation || packet.Operation != (uint)wanted.Operation || packet.Content != wanted.ContentRevision)
-            throw new InvalidOperationException("Native acknowledgment does not match the pending ticket.");
-        if (packet.Disposition < 1 || packet.Disposition > 3) throw new InvalidOperationException("Unknown native acknowledgment disposition.");
+        if (result != 0)
+            return result;
+        if (packet.Size != 80 || packet.Version != 1)
+        {
+            throw new InvalidOperationException("Native acknowledgment ABI mismatch.");
+        }
 
-        Evidence evidence = (Evidence)(packet.Evidence & 0x1FFFu);
-        ulong sourceFrame = packet.SourceFrame;
+        acknowledgements.ValidateTicket(packet.Session, packet.Serial, packet.Generation,
+            packet.Content, packet.Operation, packet.Disposition);
         bool success = packet.Disposition == 1 && packet.Result == 0;
+        if (!acknowledgements.TryReadEvidence(packet.Evidence, success, out Evidence evidence))
+        {
+            return 1;
+        }
 
+        ulong sourceFrame = packet.SourceFrame;
         if (success && wanted.Operation == Operation.RestoreNativeRouting)
         {
-            // Bit 16 means native has fenced; the main-side routing report supplies the rest.
-            if ((packet.Evidence & (1u << 16)) == 0 || routingEvidence == Evidence.None) return 1;
-            evidence |= routingEvidence;
-            // The render thread rebinds the original drawable after the main report, so keep the later frame.
-            sourceFrame = Math.Max(routingFrame, packet.SourceFrame);
+            // The render thread rebinds after the main report, so keep the later frame.
+            sourceFrame = Math.Max(acknowledgements.RoutingFrame, packet.SourceFrame);
         }
 
         if (success && wanted.Operation == Operation.PrepareHiddenGeneration)
         {
             // Stay pending until native has actually shown the marker frame for this generation.
             int read = ReadStatus(out StatusPacket state);
-            if (read != 0) return read;
-            if (!warmupMarkers.TryGetValue(wanted.Generation, out ulong markerFrame) ||
-                (state.Flags & 2u) == 0 ||
-                state.NativeRevealFrame < sourceFrame ||
-                state.NativeRevealFrame < markerFrame ||
-                state.NativeSubmittedGeneration != wanted.Generation ||
-                state.NativeSubmittedContent != wanted.ContentRevision ||
-                state.NativeSubmittedRestoreSerial != 0)
+            if (read != 0)
+                return read;
+            if (acknowledgements.TrySupersedePreparation(sourceFrame, evidence,
+                state.ContentFence, state.ContentAcknowledged, out acknowledgement))
+            {
+                return 0;
+            }
+
+            if (!acknowledgements.WarmupRevealed(sourceFrame, state.Flags, state.NativeRevealFrame,
+                state.NativeSubmittedGeneration, state.NativeSubmittedContent, state.NativeSubmittedRestoreSerial))
+            {
                 return 1;
+            }
+
             evidence |= Evidence.NativeFullUiMaintained;
         }
 
-        if (success && (evidence & wanted.Required) != wanted.Required) return 1;
-
-        acknowledgement = new Acknowledgement
-        {
-            Session = packet.Session,
-            Serial = packet.Serial,
-            Generation = packet.Generation,
-            Operation = (Operation)packet.Operation,
-            Evidence = evidence,
-            Frame = sourceFrame,
-            Success = success,
-            Superseded = packet.Disposition == 2,
-            Error = success ? null : "Native operation: disposition " + packet.Disposition + ", HRESULT 0x" + packet.Result.ToString("X8"),
-        };
-
-        pending = null;
-        return 0;
+        return acknowledgements.Complete(packet.Disposition, packet.Result, evidence, sourceFrame, out acknowledgement);
     }
 
     public int RoutingRestored(Command ticket, ulong frame, Evidence evidence)
     {
         CheckMain();
-        if (!pending.HasValue || pending.Value.Session != ticket.Session || pending.Value.Serial != ticket.Serial ||
-            pending.Value.Operation != Operation.RestoreNativeRouting || frame == 0 ||
-            (evidence & ticket.Required) != ticket.Required)
-            throw new InvalidOperationException("Main routing report does not match the accepted cancellation fence.");
-
-        routingFrame = frame;
-        routingEvidence = evidence;
+        acknowledgements.RoutingRestored(ticket, frame, evidence);
         return 0;
     }
 
@@ -356,8 +345,10 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
 
         int result = queueNativeFrame(ref packet, 64, out IntPtr ticket, out int token);
         dispatch = new NativeDispatch { Ticket = ticket, Token = token };
-        if (result == 0 && !marker.BeginOnly && marker.RestoreSerial == 0 && marker.Generation != 0 && !warmupMarkers.ContainsKey(marker.Generation))
-            warmupMarkers.Add(marker.Generation, marker.SourceFrame);
+        if (result == 0)
+        {
+            acknowledgements.RecordWarmupMarker(marker);
+        }
 
         return result;
     }
@@ -372,7 +363,8 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
     private int ReadStatus(out StatusPacket state)
     {
         state = new StatusPacket { Size = 472, Version = 1 };
-        if (startedSession == 0) return 1;
+        if (startedSession == 0)
+            return 1;
 
         int result = queryStatus(ref state, 472);
         if (result == 0 && (state.Size != 472 || state.Version != 1 || state.Session != startedSession))
@@ -386,8 +378,10 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
         sample = default;
 
         int read = ReadStatus(out StatusPacket state);
-        if (read < 0) throw new InvalidOperationException("Linux presentation status failed: " + read);
-        if (read != 0 || state.Result < 0 || state.ActiveGeneration == 0) return false;
+        if (read < 0)
+            throw new InvalidOperationException("Linux presentation status failed: " + read);
+        if (read != 0 || state.Result < 0 || state.ActiveGeneration == 0)
+            return false;
 
         sample = new PresentationSample(state.Session, state.ActiveGeneration, state.WorkerCommit,
             ClockNow(), ClockFrequency, PresentationMetric.CompletedSwaps);
@@ -408,9 +402,12 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
     private static uint NativeFlags(FrameFlags flags)
     {
         uint native = (flags & FrameFlags.HasMap) != 0 ? 1u : 0u;
-        if ((flags & FrameFlags.WorldDispatchCompleted) != 0) native |= 2u;
-        if ((flags & FrameFlags.WorldDispatchAbsent) != 0) native |= 4u;
-        if ((flags & FrameFlags.FlipY) != 0) native |= 8u | 16u;
+        if ((flags & FrameFlags.WorldDispatchCompleted) != 0)
+            native |= 2u;
+        if ((flags & FrameFlags.WorldDispatchAbsent) != 0)
+            native |= 4u;
+        if ((flags & FrameFlags.FlipY) != 0)
+            native |= 8u | 16u;
         return native;
     }
 
@@ -437,7 +434,8 @@ public sealed class LinuxRendererApi : INativeSession, IRetainedNativeSession, I
 
     private static void RequireSize<T>(int expected)
     {
-        if (Marshal.SizeOf(typeof(T)) != expected) throw new InvalidOperationException(typeof(T).Name + " ABI size mismatch.");
+        if (Marshal.SizeOf(typeof(T)) != expected)
+            throw new InvalidOperationException(typeof(T).Name + " ABI size mismatch.");
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 8)]

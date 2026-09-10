@@ -11,6 +11,7 @@ internal static class LifecycleTests
         SupersededPreparation(false);
         SupersededPreparation(true);
         RejectInvalidSupersession();
+        RenderingSuspension();
         return checks;
     }
 
@@ -31,7 +32,7 @@ internal static class LifecycleTests
         return command!.Value;
     }
 
-    private static void Reply(LifecycleCoordinator core, Command command, bool superseded = false)
+    private static void Reply(LifecycleCoordinator core, Command command, bool superseded = false, ulong frame = 100)
     {
         core.Acknowledge(new Acknowledgement
         {
@@ -39,7 +40,7 @@ internal static class LifecycleTests
             Serial = command.Serial,
             Generation = command.Generation,
             Operation = command.Operation,
-            Frame = superseded ? 0ul : 100ul,
+            Frame = superseded ? 0ul : frame,
             Evidence = superseded ? Evidence.None : command.Required,
             Success = true,
             Superseded = superseded
@@ -143,5 +144,49 @@ internal static class LifecycleTests
         Reply(core, prepare, true);
         Next(core, Operation.RestoreNativeRouting);
         Check(core.Faulted, "A current-content prepare cannot claim supersession");
+    }
+
+    private static void RenderingSuspension()
+    {
+        LifecycleCoordinator core = Start();
+        Command prepare = Next(core, Operation.PrepareHiddenGeneration);
+        core.MarkPreparationSubmitted(prepare);
+        PublishFence(core);
+        Reply(core, prepare);
+        Reply(core, Next(core, Operation.ActivateGeneration));
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Active, "Renderer starts active");
+
+        core.EnterDraw();
+        core.SetRenderingAllowed(false);
+        Check(core.UserEnabled && !core.AdvanceAtSafeBoundary(true).HasValue, "Suspension preserves user intent and waits for draw exit");
+        core.LeaveDraw();
+
+        Operation[] retirement =
+        {
+            Operation.RestoreNativeRouting,
+            Operation.AwaitNativeFrame,
+            Operation.DetachComposite,
+            Operation.RetireSessionGpu,
+            Operation.ReleaseSessionMain,
+            Operation.StopWorker,
+        };
+        foreach (Operation operation in retirement)
+        {
+            Command command = Next(core, operation);
+            Reply(core, command, frame: command.AfterFrame + 1);
+        }
+
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Off && core.UserEnabled, "Suspended renderer stays off after complete retirement");
+        core.SetRenderingAllowed(true);
+        Check(Next(core, Operation.PrepareHiddenGeneration).Session > prepare.Session, "Free camera can start a fresh session");
+
+        core.ReportFailure("fixture failure");
+        core.SetRenderingAllowed(false);
+        core.SetRenderingAllowed(true);
+        Check(core.Faulted && core.LastFailure == "fixture failure", "Automatic mode switches cannot clear a fault");
+        Next(core, Operation.RestoreNativeRouting);
+        core.SetEnabled(false);
+        core.SetEnabled(true);
+        Check(!core.Faulted, "An explicit user off/on still permits retry");
     }
 }

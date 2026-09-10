@@ -11,7 +11,8 @@ internal static class CameraPlus
 
     internal static void Register()
     {
-        if (!ModsConfig.IsActive(PackageId)) return;
+        if (!ModsConfig.IsActive(PackageId))
+            return;
 
         try
         {
@@ -63,7 +64,8 @@ internal static class CameraPlus
 
         public CameraPolicy? Resolve(CameraContext context)
         {
-            if (context.Driver.config.GetType() != typeof(CameraMapConfig_Normal)) return null;
+            if (context.Driver.config.GetType() != typeof(CameraMapConfig_Normal))
+                return null;
             object instance = settings(null!) ?? throw new InvalidOperationException("Camera+ settings are not initialized.");
 
             bool changed = policy == null;
@@ -75,7 +77,8 @@ internal static class CameraPlus
 
             values[7] = zoomToMouse(instance) ? 1 : 0;
             changed |= values[7] != previous[7];
-            if (!changed) return policy;
+            if (!changed)
+                return policy;
 
             double minRoot = values[0];
             double maxRoot = values[1];

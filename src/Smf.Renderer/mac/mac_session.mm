@@ -176,6 +176,65 @@ namespace mac {
             return uint64_t(window.width) * window.height * 4 * 4;
         }
 
+        bool texture_referenced(id<MTLTexture> texture, const source_slot* owner) {
+            if (!texture) return false;
+
+            for (const auto& slot : slots) {
+                if (&slot == owner) continue;
+                for (auto input : slot.inputs) {
+                    if (input == texture) return true;
+                }
+                if (slot.state != slot_free && (slot.base.texture == texture || slot.world.texture == texture ||
+                    slot.hud.texture == texture || slot.cache.texture == texture)) return true;
+            }
+
+            for (const auto& generation : generations) {
+                if (generation.cache.texture == texture) return true;
+            }
+
+            if (work.base.texture == texture || work.world.texture == texture ||
+                work.hud.texture == texture || work.cache.texture == texture) return true;
+
+            for (const auto& dispatch : tickets) {
+                if (!dispatch.token) continue;
+                // Cancelled tickets retain their input leases until the ordered pump.
+                for (auto input : dispatch.inputs) {
+                    if (input == texture) return true;
+                }
+            }
+            return false;
+        }
+
+        bool idle_storage(const source_slot& slot, const source_slot* selected) {
+            const int index = int(&slot - slots.data());
+            if (&slot == selected || index == visible || index == work.slot || slot.state != slot_free ||
+                slot.generation || slot.content || slot.frame || slot.source_serial || slot.sealed || slot.abandoned ||
+                slot.has_world || slot.base_copy || slot.seal_copy || slot.cache_dependency || slot.cache.texture) return false;
+
+            for (auto input : slot.inputs) {
+                if (input) return false;
+            }
+            return !texture_referenced(slot.base.texture, &slot) && !texture_referenced(slot.world.texture, &slot) &&
+                !texture_referenced(slot.hud.texture, &slot);
+        }
+
+        // Idle storage must not starve a new frame. Keep the selected textures:
+        // the caller computed extra from their existing allocations.
+        bool admit_textures(uint64_t extra, const source_slot* selected) {
+            if (budget().allows(extra, display_reserve())) return true;
+
+            for (auto& slot : slots) {
+                if (!idle_storage(slot, selected)) continue;
+                if (!slot.base.texture && !slot.world.texture && !slot.hud.texture) continue;
+
+                slot.base = {};
+                slot.world = {};
+                slot.hud = {};
+                if (budget().allows(extra, display_reserve())) return true;
+            }
+            return false;
+        }
+
         // Keep the allocated textures for reuse, drop everything else.
         void recycle(source_slot& s) {
             image_layer base = s.base;
@@ -702,7 +761,7 @@ namespace mac {
                 return;
             }
 
-            if (!budget().allows(allocation(s->base, p.width, p.height), display_reserve())) {
+            if (!admit_textures(allocation(s->base, p.width, p.height), s)) {
                 state.dropped_frames++;
                 return;
             }
@@ -762,7 +821,7 @@ namespace mac {
                 if (f.cache.serial != g->cache_packet.serial || !g->cache.texture) extra += uint64_t(f.cache.width) * f.cache.height * 4;
             }
 
-            if (!budget().allows(extra, display_reserve())) {
+            if (!admit_textures(extra, s)) {
                 s->abandoned = true;
                 state.dropped_frames++;
                 return;

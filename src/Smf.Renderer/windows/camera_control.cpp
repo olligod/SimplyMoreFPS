@@ -3,9 +3,9 @@
 #define SMF_BRIDGE_INTERNAL
 #include "camera_control.h"
 #include "wheel_queue.h"
+#include "../common/input_policy.h"
 #include <algorithm>
 #include <atomic>
-#include <cmath>
 
 namespace camera_control {
     namespace {
@@ -56,10 +56,6 @@ namespace camera_control {
                 if (held) ReleaseSRWLockExclusive(&gate);
             }
         };
-
-        bool finite(double n) {
-            return std::isfinite(n);
-        }
 
         bool key_down(int key) {
             return (GetAsyncKeyState(key) & 0x8000) != 0;
@@ -139,16 +135,7 @@ namespace camera_control {
     }
 
     HRESULT publish_policy(const smf_control_policy& p) {
-        if (p.size != sizeof(p) || p.version != 1 || !p.epoch || !p.revision || p.rect_count > 64 || (p.flags & ~127u)) {
-            return E_INVALIDARG;
-        }
-        if (!finite(p.ui_scale) || p.ui_scale <= 0 || !finite(p.inspect_height) || p.inspect_height < 0) return E_INVALIDARG;
-
-        for (uint32_t i = 0; i < p.rect_count; ++i) {
-            const auto& r = p.rects[i];
-            if (!finite(r.left) || !finite(r.top) || !finite(r.right) || !finite(r.bottom)) return E_INVALIDARG;
-            if (r.right < r.left || r.bottom < r.top) return E_INVALIDARG;
-        }
+        if (!input_policy::valid(p)) return E_INVALIDARG;
 
         try_lock lock;
         if (!lock.held) {
@@ -163,13 +150,7 @@ namespace camera_control {
     }
 
     HRESULT queue(const smf_control_impulse& p) {
-        if (p.size != sizeof(p) || p.version != 1 || !p.epoch || !p.sequence || p.reserved || (p.flags & ~3u)) {
-            return E_INVALIDARG;
-        }
-        if (!finite(p.wheel_delta) || (p.wheel_delta == 0 && !p.flags)) return E_INVALIDARG;
-        // Wheel input comes from the hook only; a managed wheel impulse is never accepted.
-        if (p.wheel_delta != 0) return E_INVALIDARG;
-        if (p.sequence <= last_sequence) return E_INVALIDARG;
+        if (!input_policy::valid_key_impulse(p, last_sequence)) return E_INVALIDARG;
 
         const uint64_t next = head.load(std::memory_order_relaxed);
         const uint64_t first = tail.load(std::memory_order_acquire);
@@ -208,19 +189,7 @@ namespace camera_control {
             }
         }
 
-        if (worker_policy.epoch == epoch) {
-            if ((worker_policy.flags & 1) != 0) input.flags |= SMF_CAMERA_ALLOW_EDGE_SCROLL;
-            if ((worker_policy.flags & 2) != 0) input.flags |= SMF_CAMERA_FULLSCREEN;
-            input.inspect_pane_height = worker_policy.inspect_height;
-
-            for (uint32_t i = 0; i < worker_policy.rect_count; ++i) {
-                const auto& r = worker_policy.rects[i];
-                if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) {
-                    input.flags |= SMF_CAMERA_POINTER_OVER_UI;
-                    break;
-                }
-            }
-        }
+        input_policy::apply(worker_policy, epoch, x, y, input);
 
         // Drain only what existed when this step started so new input cannot keep us looping.
         const uint64_t end = head.load(std::memory_order_acquire);

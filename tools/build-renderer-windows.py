@@ -6,8 +6,6 @@ Build Tools (MSVC x64 and a Windows SDK). Nothing is installed and no game is st
 --plan only prints the source manifest.
 """
 import argparse
-import hashlib
-import importlib.util
 import json
 import os
 import shutil
@@ -15,6 +13,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+
+# CI also imports these scripts by path, without tools/ on its module search path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_build import BuildLog, RECEIPT_NAME, load_package, snapshot_sources, write_receipt
+from native_build import file_digest, file_record
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = 'win-x64'
@@ -62,28 +65,18 @@ CAMERA_EXPORTS = tuple('smf_camera_' + name for name in ('create', 'adopt', 'con
 
 TOOLS = ('cl.exe', 'link.exe', 'dumpbin.exe', 'dotnet.exe')
 RENDERER_LIBRARIES = ('d3d11.lib', 'dxgi.lib', 'dcomp.lib', 'ole32.lib', 'user32.lib')
-RECEIPT_NAME = 'build-receipt.json'
 
 
 def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest().upper()
+    return file_digest(path, uppercase=True)
 
 
 def record(path, root):
-    return {'path': path.relative_to(root).as_posix(), 'sha256': digest(path), 'bytes': path.stat().st_size}
+    return file_record(path, root, uppercase=True)
 
 
 def load_package_module():
-    """tools/package-release.py owns the source inventory and the final validation."""
-    spec = importlib.util.spec_from_file_location('smf_windows_package', ROOT / 'tools/package-release.py')
-    module = importlib.util.module_from_spec(spec)
-    previous = sys.dont_write_bytecode
-    try:
-        sys.dont_write_bytecode = True
-        spec.loader.exec_module(module)
-    finally:
-        sys.dont_write_bytecode = previous
-    return module
+    return load_package(ROOT, 'smf_windows_package')
 
 
 def find_vcvars(vcvars):
@@ -130,9 +123,9 @@ def tool_environment(vcvars, out):
 class Build:
     def __init__(self, out, snapshot, env, tool, receipt):
         self.out = out
-        self.logs = out / 'logs'
         self.snapshot = snapshot
         self.env = env
+        self.log_runner = BuildLog(out, self.env, receipt, uppercase_hashes=True)
         self.tool = tool
         self.receipt = receipt
         self.renderer = snapshot / RENDERER_DIR
@@ -143,27 +136,7 @@ class Build:
         self.minhook_objects = [out / 'obj/vendor' / (Path(name).stem + '.obj') for name in MINHOOK_SOURCES]
 
     def run(self, label, command):
-        """Run one step with its output captured to a log; the receipt keeps the exit code."""
-        command = [str(part) for part in command]
-        log = self.logs / (label + '.log')
-        start = time.time()
-
-        with log.open('w', encoding='utf-8') as stream:
-            result = subprocess.run(command, cwd=self.out, env=self.env, stdout=stream, stderr=subprocess.STDOUT)
-
-        self.receipt['steps'].append({
-            'label': label,
-            'command': command,
-            'exitCode': result.returncode,
-            'elapsedSeconds': time.time() - start,
-            'log': log.relative_to(self.out).as_posix(),
-            'logSha256': digest(log),
-        })
-
-        print(label + ': ' + str(result.returncode), flush=True)
-        if result.returncode:
-            raise RuntimeError(label + ' failed; see ' + str(log))
-        return log.read_text(encoding='utf-8', errors='replace')
+        return self.log_runner.run(label, command)
 
     def managed_options(self, label):
         intermediate = str(self.out / 'obj' / label) + '/'
@@ -271,10 +244,7 @@ def main():
     out = package.replace_output(args.output, args.force, sources)
     out.mkdir(parents=True, exist_ok=False)
     snapshot = out / 'source'
-    for path in sources:
-        target = snapshot / path.relative_to(ROOT)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
+    snapshot_sources(ROOT, sources, manifest, snapshot, uppercase=True)
 
     (out / 'Native' / RUNTIME).mkdir(parents=True)
     (out / 'logs').mkdir()
@@ -320,7 +290,7 @@ def main():
         raise
     finally:
         receipt['finishedUnix'] = time.time()
-        (out / RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
+        write_receipt(out, receipt)
 
     print(json.dumps({'state': receipt['state'], 'outputs': receipt['outputs']}, indent=2))
 

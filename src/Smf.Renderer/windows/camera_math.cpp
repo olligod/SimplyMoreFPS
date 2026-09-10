@@ -1,7 +1,7 @@
 #include "session_internal.h"
+#include "../common/projection_math.h"
 #include <cmath>
 #include <cstring>
-#include <limits>
 
 namespace session {
 
@@ -23,34 +23,7 @@ namespace session {
         if (!std::isfinite(p.orthographic_size) || p.orthographic_size <= 0) return false;
         if (p.pixel_x != 0 || p.pixel_y != 0 || p.pixel_width != width || p.pixel_height != height) return false;
 
-        for (int i = 0; i < 16; ++i) {
-            if (!std::isfinite(p.world_to_camera[i]) || !std::isfinite(p.projection[i])) return false;
-        }
-
-        if (std::abs(p.projection[3]) > 1e-7 || std::abs(p.projection[7]) > 1e-7) return false;
-        if (std::abs(p.projection[11]) > 1e-7 || std::abs(p.projection[15] - 1) > 1e-7) return false;
-
-        double combined[16]{};
-        for (int column = 0; column < 4; ++column) {
-            for (int row = 0; row < 4; ++row) {
-                for (int k = 0; k < 4; ++k) {
-                    combined[column * 4 + row] += double(p.projection[k * 4 + row]) * p.world_to_camera[column * 4 + k];
-                }
-            }
-        }
-
-        if (std::abs(combined[3]) > 1e-7 || std::abs(combined[11]) > 1e-7 || std::abs(combined[15]) < 1e-10) return false;
-
-        // A float 90-degree view rotation leaves FLT_EPSILON-sized cross terms. Allow that
-        // much relative to each ground basis so zoom cannot magnify it into a fake tilt.
-        constexpr double angular_roundoff = 4 * std::numeric_limits<float>::epsilon();
-        if (std::abs(combined[4]) > angular_roundoff * std::hypot(combined[0], combined[8])) return false;
-        if (std::abs(combined[5]) > angular_roundoff * std::hypot(combined[1], combined[9])) return false;
-
-        const double sx = double(width) * 0.5 / combined[15];
-        const double sy = -double(height) * 0.5 / combined[15];
-        a = {combined[0] * sx, combined[8] * sx, combined[12] * sx + width * 0.5,
-             combined[1] * sy, combined[9] * sy, combined[13] * sy + height * 0.5};
+        if (!smf_projection::ground_projection(p.projection, p.world_to_camera, width, height, a)) return false;
         return std::isfinite(a.a) && std::isfinite(a.b) && std::isfinite(a.c) &&
             std::isfinite(a.d) && std::isfinite(a.e) && std::isfinite(a.f) && std::abs(a.a * a.e - a.b * a.d) > 1e-10;
     }
@@ -64,15 +37,8 @@ namespace session {
             return true;
         }
 
-        const double scale = m.projection_half_height / projection_half_height;
-        const double cx = m.width * .5;
-        const double cy = m.height * .5;
-        const affine& n = m.nominal;
-
-        result = {n.a * scale, n.b * scale,
-            cx + scale * (n.c - cx + n.a * (m.x - x) + n.b * (m.z - z)),
-            n.d * scale, n.e * scale,
-            cy + scale * (n.f - cy + n.d * (m.x - x) + n.e * (m.z - z))};
+        result = smf_projection::root_projection(m.nominal, m.projection_half_height / projection_half_height,
+            m.width, m.height, m.x - x, m.z - z);
         return std::isfinite(result.a) && std::isfinite(result.b) && std::isfinite(result.c) &&
             std::isfinite(result.d) && std::isfinite(result.e) && std::isfinite(result.f);
     }
@@ -103,16 +69,9 @@ namespace session {
 
         const double det = source.a * source.e - source.b * source.d;
         if (!std::isfinite(det) || std::abs(det) < 1e-10) return false;
-        const affine inverse{source.e / det, -source.b / det, (source.b * source.f - source.e * source.c) / det,
-            -source.d / det, source.a / det, (source.d * source.c - source.a * source.f) / det};
-
-        const double values[] = {
-            reference.a * inverse.a + reference.b * inverse.d,
-            reference.d * inverse.a + reference.e * inverse.d,
-            reference.a * inverse.b + reference.b * inverse.e,
-            reference.d * inverse.b + reference.e * inverse.e,
-            reference.a * inverse.c + reference.b * inverse.f + reference.c,
-            reference.d * inverse.c + reference.e * inverse.f + reference.f};
+        const affine inverse = smf_projection::inverse(source, det);
+        const affine mapped = smf_projection::multiply(reference, inverse);
+        const double values[] = {mapped.a, mapped.d, mapped.b, mapped.e, mapped.c, mapped.f};
 
         float* out = &m._11;
         for (int i = 0; i < 6; ++i) {
