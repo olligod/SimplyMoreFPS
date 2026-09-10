@@ -42,12 +42,16 @@ Checked on Windows, 9 September 2026:
 - FPS Stabilizer
 - Adaptive TPS
 
+Checked on Windows, 10 September 2026:
+
+- AntiAliasing: FXAA, SMAA and sharpening. SSAA is unsupported.
+
 ### Don't mix
 
 - SMF and Butter++. Use SMF instead.
 - Camera+ and SimpleCameraSetting/Perspective Shift. Those mods conflict with each other.
 
-Version 0.3.9. Last updated: 10 September 2026.
+Version 0.3.10. Last updated: 10 September 2026.
 
 ## More from me
 

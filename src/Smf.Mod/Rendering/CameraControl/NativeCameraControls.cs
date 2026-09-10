@@ -201,16 +201,17 @@ public static class NativeCameraControls
         policy.Flags |= (uint)geometry.ReservedWheelModifiers << 4;
 
         // Flag 4 denies the wheel. Only an owned camera may zoom, and never
-        // while text, search, a designator or a hot control has the input.
+        // while text, search or a hot control has the input.
         if ((state.Flags & (uint)MainFlags.Owned) != 0)
             policy.Flags |= 8;
         else
             policy.Flags |= 4;
 
         if ((state.Flags & ((uint)MainFlags.MotionBlocked | (uint)MainFlags.TextCaptured | (uint)MainFlags.SearchFocused)) != 0
-            || lastHotControl != 0
-            || Find.DesignatorManager.SelectedDesignator != null)
+            || lastHotControl != 0)
+        {
             policy.Flags |= 4;
+        }
 
         if (Find.MainTabsRoot.OpenTab == MainButtonDefOf.Inspect
             && MainButtonDefOf.Inspect.TabWindow is MainTabWindow_Inspect inspect

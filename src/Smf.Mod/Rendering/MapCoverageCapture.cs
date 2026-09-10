@@ -172,6 +172,12 @@ internal sealed class MapCoverageCapture
 
     private void CheckSource()
     {
+        if (source != null && source.targetTexture != null)
+        {
+            throw new InvalidOperationException(
+                "Map coverage does not support camera target replacement, including AntiAliasing SSAA: " + source.targetTexture.name);
+        }
+
         if (!MapSceneReadiness.Ready || Find.CurrentMap != map || Find.Camera != source || Find.CameraDriver != driver ||
             source == null || !source.enabled || !source.orthographic || source.targetTexture != null ||
             !WorldRendererUtility.DrawingMap ||
@@ -273,6 +279,8 @@ internal sealed class MapCoverageCapture
             return;
         }
 
+        // A render-target mode can change even while the simulation and map cache are paused.
+        effect.Validate();
         UpdateBounds();
         if (!boundsDirty && cacheSerial != 0 && (ticks == cachedTick || Stopwatch.GetTimestamp() < nextRefresh)) return;
 
@@ -939,7 +947,13 @@ internal sealed class MapCoverageCapture
 
 public sealed class CoverageColorEffect : MonoBehaviour
 {
+    private Camera sourceCamera;
     private MonoBehaviour source;
+    private readonly List<MonoBehaviour> components = new List<MonoBehaviour>();
+    private readonly Dictionary<Type, bool> imageEffectTypes = new Dictionary<Type, bool>();
+    private Compatibility.AntiAliasing antiAliasing;
+    private bool antiAliasingActive;
+    private bool antiAliasingFirst;
     private Material material;
     private int frame = -1;
     private int calls;
@@ -949,20 +963,87 @@ public sealed class CoverageColorEffect : MonoBehaviour
 
     internal void Bind(Camera camera)
     {
-        var effects = camera.GetComponents<MonoBehaviour>()
-            .Where(x => x.isActiveAndEnabled &&
-                AccessTools.Method(x.GetType(), "OnRenderImage", new[] { typeof(RenderTexture), typeof(RenderTexture) }) != null)
-            .ToArray();
-        if (effects.Length != 1 || effects[0].GetType().FullName != "UnityStandardAssets.ImageEffects.ColorCorrectionCurves")
+        sourceCamera = camera;
+        RefreshEffects();
+    }
+
+    private bool IsImageEffect(Type type)
+    {
+        if (!imageEffectTypes.TryGetValue(type, out bool result))
         {
-            throw new InvalidOperationException("Map coverage requires the native ColorCorrectionCurves effect.");
+            result = AccessTools.Method(type, "OnRenderImage", new[] { typeof(RenderTexture), typeof(RenderTexture) }) != null;
+            imageEffectTypes.Add(type, result);
         }
 
-        source = effects[0];
+        return result;
+    }
+
+    private void RefreshEffects()
+    {
+        sourceCamera.GetComponents(components);
+        int colorIndex = -1;
+        int aaIndex = -1;
+        bool unsupported = false;
+
+        for (int i = 0; i < components.Count; i++)
+        {
+            MonoBehaviour component = components[i];
+            if (component == null)
+            {
+                continue;
+            }
+
+            Type type = component.GetType();
+            if (type.FullName == Compatibility.AntiAliasing.ControllerName)
+            {
+                if (aaIndex >= 0)
+                {
+                    unsupported = true;
+                }
+
+                aaIndex = i;
+
+                if (antiAliasing == null || !antiAliasing.Matches(component))
+                {
+                    antiAliasing = new Compatibility.AntiAliasing(component);
+                }
+
+                // SSAA disables its image effect but still replaces the original camera target.
+                antiAliasing.Validate();
+            }
+            else if (component.isActiveAndEnabled && IsImageEffect(type))
+            {
+                if (type.FullName == "UnityStandardAssets.ImageEffects.ColorCorrectionCurves" && colorIndex < 0)
+                {
+                    colorIndex = i;
+                }
+                else
+                {
+                    unsupported = true;
+                }
+            }
+        }
+
+        if (unsupported || colorIndex < 0)
+        {
+            string names = string.Join(", ", components.Where(x => x != null && x.isActiveAndEnabled && IsImageEffect(x.GetType()))
+                .Select(x => x.GetType().FullName));
+            throw new InvalidOperationException("Unsupported map coverage image effects: " + names +
+                ". Expected ColorCorrectionCurves with optional remi.antialiasing post-processing.");
+        }
+
+        source = components[colorIndex];
+        antiAliasingActive = aaIndex >= 0 && components[aaIndex].isActiveAndEnabled;
+        antiAliasingFirst = aaIndex < colorIndex;
+        if (aaIndex < 0)
+        {
+            antiAliasing = null;
+        }
     }
 
     internal bool Refresh()
     {
+        RefreshEffects();
         if (source == null || !source.isActiveAndEnabled || (bool)ReadField(source, "useDepthCorrection") || (bool)ReadField(source, "selectiveCc"))
         {
             throw new InvalidOperationException("Map coverage requires the simple native color correction path.");
@@ -993,6 +1074,8 @@ public sealed class CoverageColorEffect : MonoBehaviour
         return true;
     }
 
+    internal void Validate() => antiAliasing?.Validate();
+
     internal void BeginFrame(int currentFrame)
     {
         frame = currentFrame;
@@ -1010,8 +1093,44 @@ public sealed class CoverageColorEffect : MonoBehaviour
         }
 
         ++calls;
-        Graphics.Blit(input, output, material);
-        completed = Time.frameCount;
+        RenderTexture previous = RenderTexture.active;
+        RenderTexture intermediate = null;
+        try
+        {
+            if (!antiAliasingActive)
+            {
+                Graphics.Blit(input, output, material);
+            }
+            else
+            {
+                RenderTextureDescriptor descriptor = input.descriptor;
+                descriptor.depthBufferBits = 0;
+                descriptor.msaaSamples = 1;
+                intermediate = RenderTexture.GetTemporary(descriptor);
+
+                // Match the original component order, without creating another mod controller.
+                if (antiAliasingFirst)
+                {
+                    antiAliasing.Render(input, intermediate);
+                    Graphics.Blit(intermediate, output, material);
+                }
+                else
+                {
+                    Graphics.Blit(input, intermediate, material);
+                    antiAliasing.Render(intermediate, output);
+                }
+            }
+
+            completed = Time.frameCount;
+        }
+        finally
+        {
+            RenderTexture.active = previous;
+            if (intermediate != null)
+            {
+                RenderTexture.ReleaseTemporary(intermediate);
+            }
+        }
     }
 
     private void OnDestroy()
