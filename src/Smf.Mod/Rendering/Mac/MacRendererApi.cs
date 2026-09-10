@@ -1,6 +1,5 @@
 #nullable disable
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -32,14 +31,11 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     private readonly CancelFn cancel;
     private readonly JoinedFn joined;
     private PresentationFn presentation;
-    private readonly Dictionary<ulong, ulong> warmupMarkers = new Dictionary<ulong, ulong>();
+    private readonly RendererAcknowledgementState acknowledgements = new RendererAcknowledgementState();
     private ulong startedSession;
     private ulong fenceDelivered;
     private ulong fencePublished;
     private ulong reportedFailureSession;
-    private Command? pending;
-    private Evidence routingEvidence;
-    private ulong routingFrame;
 
     public IntPtr RenderEvent { get; }
     public long ClockFrequency { get; }
@@ -134,7 +130,7 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             startedSession = value.Session;
             fenceDelivered = 0;
             fencePublished = 0;
-            warmupMarkers.Clear();
+            acknowledgements.ClearWarmupMarkers();
         }
 
         if (value.Operation == Operation.PrepareHiddenGeneration || value.Operation == Operation.PrepareReplacementGeneration)
@@ -180,9 +176,7 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
         int result = command(ref packet, 88);
         if (result == 0)
         {
-            pending = value;
-            routingEvidence = Evidence.None;
-            routingFrame = 0;
+            acknowledgements.Accept(value);
         }
 
         return result;
@@ -238,8 +232,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     {
         RequireMainThread();
         value = default;
-        if (!pending.HasValue) return 1;
-        Command wanted = pending.Value;
+        if (!acknowledgements.Pending.HasValue) return 1;
+        Command wanted = acknowledgements.Pending.Value;
         if (wanted.Operation == Operation.StopWorker)
         {
             int joinResult = joined(wanted.Session);
@@ -250,24 +244,24 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
         int result = ack(wanted.Session, wanted.Serial, ref packet, 80);
         if (result != 0) return result;
 
-        if (packet.Size != 80
-            || packet.Version != 1
-            || packet.Session != wanted.Session
-            || packet.Serial != wanted.Serial
-            || packet.Generation != wanted.Generation
-            || packet.Operation != (uint)wanted.Operation
-            || packet.Content != wanted.ContentRevision)
-            throw new InvalidOperationException("Native acknowledgment does not match the immutable pending ticket.");
-        if (packet.Disposition < 1 || packet.Disposition > 3) throw new InvalidOperationException("Unknown native acknowledgment disposition.");
+        if (packet.Size != 80 || packet.Version != 1)
+        {
+            throw new InvalidOperationException("Native acknowledgment ABI mismatch.");
+        }
 
-        Evidence evidence = (Evidence)(packet.Evidence & 0x1FFFu);
-        ulong sourceFrame = packet.SourceFrame;
+        acknowledgements.ValidateTicket(packet.Session, packet.Serial, packet.Generation,
+            packet.Content, packet.Operation, packet.Disposition);
         bool success = packet.Disposition == 1 && packet.Result == 0;
+        if (!acknowledgements.TryReadEvidence(packet.Evidence, success, out Evidence evidence))
+        {
+            return 1;
+        }
+
+        ulong sourceFrame = packet.SourceFrame;
         if (success && wanted.Operation == Operation.RestoreNativeRouting)
         {
-            if ((packet.Evidence & (1u << 16)) == 0 || routingEvidence == Evidence.None) return 1;
-            evidence |= routingEvidence;
-            sourceFrame = Math.Max(sourceFrame, routingFrame);
+            // Native completion can follow the main report, so keep the later frame.
+            sourceFrame = Math.Max(acknowledgements.RoutingFrame, packet.SourceFrame);
         }
 
         if (success && wanted.Operation == Operation.PrepareHiddenGeneration)
@@ -277,50 +271,22 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             int read = ReadStatus(out StatusPacket state);
             if (read != 0) return read;
 
-            if (!warmupMarkers.TryGetValue(wanted.Generation, out ulong markerFrame)
-                || (state.Flags & 2u) == 0
-                || state.NativeRevealFrame < sourceFrame
-                || state.NativeRevealFrame < markerFrame
-                || state.NativeSubmittedGeneration != wanted.Generation
-                || state.NativeSubmittedContent != wanted.ContentRevision
-                || state.NativeSubmittedRestoreSerial != 0)
+            if (!acknowledgements.WarmupRevealed(sourceFrame, state.Flags, state.NativeRevealFrame,
+                state.NativeSubmittedGeneration, state.NativeSubmittedContent, state.NativeSubmittedRestoreSerial))
+            {
                 return 1;
+            }
 
             evidence |= Evidence.NativeFullUiMaintained;
         }
 
-        if (success && (evidence & wanted.Required) != wanted.Required) return 1;
-
-        value = new Acknowledgement
-        {
-            Session = packet.Session,
-            Serial = packet.Serial,
-            Generation = packet.Generation,
-            Operation = (Operation)packet.Operation,
-            Evidence = evidence,
-            Frame = sourceFrame,
-            Success = success,
-            Superseded = packet.Disposition == 2,
-            Error = success ? null : "Native operation: disposition " + packet.Disposition + ", HRESULT 0x" + packet.Result.ToString("X8")
-        };
-
-        pending = null;
-        return 0;
+        return acknowledgements.Complete(packet.Disposition, packet.Result, evidence, sourceFrame, out value);
     }
 
     public int RoutingRestored(Command ticket, ulong actualFrame, Evidence actualEvidence)
     {
         RequireMainThread();
-        if (!pending.HasValue
-            || pending.Value.Session != ticket.Session
-            || pending.Value.Serial != ticket.Serial
-            || pending.Value.Operation != Operation.RestoreNativeRouting
-            || actualFrame == 0
-            || (actualEvidence & ticket.Required) != ticket.Required)
-            throw new InvalidOperationException("Main routing report does not match the accepted cancellation fence.");
-
-        routingFrame = actualFrame;
-        routingEvidence = actualEvidence;
+        acknowledgements.RoutingRestored(ticket, actualFrame, actualEvidence);
         return 0;
     }
 
@@ -413,8 +379,10 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
 
         int result = nativeFrame(ref packet, 64, out IntPtr ticket, out int token);
         dispatch = new NativeDispatch { Ticket = ticket, Token = token };
-        if (result == 0 && !value.BeginOnly && value.RestoreSerial == 0 && value.Generation != 0 && !warmupMarkers.ContainsKey(value.Generation))
-            warmupMarkers.Add(value.Generation, value.SourceFrame);
+        if (result == 0)
+        {
+            acknowledgements.RecordWarmupMarker(value);
+        }
 
         return result;
     }

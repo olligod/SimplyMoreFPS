@@ -17,7 +17,7 @@ Safe to add or remove mid-save.
 Open **Options -> Mod settings -> Simply More FPS**.
 
 - **Enabled** turns the mod on or off.
-- **TPS boost** lets you lower the **Game FPS target** for more TPS. You no longer need high game FPS to keep the view fluid.
+- **TPS boost**: turn down the **Game FPS target** to give simulation more time. RimWorld's default is **22**; try **15**. Camera FPS stays unchanged, but menus and animations may update less often.
 - **Show FPS/TPS** adds a small counter beside the date.
 
 ## Mod compatibility

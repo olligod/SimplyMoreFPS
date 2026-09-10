@@ -1,4 +1,5 @@
 #include "platform.h"
+#include "../common/input_policy.h"
 #include "../common/wheel_modifiers.h"
 #import <AppKit/AppKit.h>
 #import <Carbon/Carbon.h>
@@ -16,8 +17,6 @@ namespace camera_control {
         constexpr uint32_t tap_failed = 4;
 
         // smf_control_policy::flags bits.
-        constexpr uint32_t policy_edge_eligible = 1;
-        constexpr uint32_t policy_fullscreen = 2;
         constexpr uint32_t policy_wheel_unsafe = 4;
         constexpr uint32_t policy_camera_owned = 8;
 
@@ -90,17 +89,6 @@ namespace camera_control {
         uint64_t seen_focus = 0;
         uint64_t key_seen[128]{};
         bool key_blocked[128]{};
-
-        bool policy_allows(const smf_control_policy& p, uint64_t epoch, double x, double y) {
-            if (p.epoch != epoch || (p.flags & (policy_wheel_unsafe | policy_camera_owned)) != policy_camera_owned ||
-                x < 0 || y < 0 || x >= p.width || y >= p.height) return false;
-
-            for (uint32_t i = 0; i < p.rect_count; ++i) {
-                const auto& r = p.rects[i];
-                if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) return false;
-            }
-            return true;
-        }
 
         long dictionary_number(CFDictionaryRef entry, CFStringRef key) {
             CFTypeRef value = CFDictionaryGetValue(entry, key);
@@ -383,15 +371,7 @@ namespace camera_control {
     }
 
     HRESULT publish_policy(const smf_control_policy& p) {
-        if (!pthread_main_np() || p.size != 1088 || p.version != 1 || !p.epoch || !p.revision || p.rect_count > 64 ||
-            (p.flags & ~127u) || !std::isfinite(p.ui_scale) || p.ui_scale <= 0 ||
-            !std::isfinite(p.inspect_height) || p.inspect_height < 0) return E_INVALIDARG;
-
-        for (uint32_t i = 0; i < p.rect_count; ++i) {
-            const auto& r = p.rects[i];
-            if (!std::isfinite(r.left) || !std::isfinite(r.top) || !std::isfinite(r.right) || !std::isfinite(r.bottom) ||
-                r.left > r.right || r.top > r.bottom) return E_INVALIDARG;
-        }
+        if (!pthread_main_np() || !input_policy::valid(p)) return E_INVALIDARG;
 
         std::unique_lock<std::mutex> lock(gate, std::try_to_lock);
         if (!lock) {
@@ -407,8 +387,7 @@ namespace camera_control {
     }
 
     HRESULT queue(const smf_control_impulse& p) {
-        if (!pthread_main_np() || p.size != 48 || p.version != 1 || !p.epoch || p.sequence <= last_sequence || p.reserved ||
-            (p.flags & ~3u) || !p.flags || p.wheel_delta != 0) return E_INVALIDARG;
+        if (!pthread_main_np() || !input_policy::valid_key_impulse(p, last_sequence)) return E_INVALIDARG;
 
         uint64_t end = head.load();
         uint64_t first = tail.load(std::memory_order_acquire);
@@ -426,15 +405,7 @@ namespace camera_control {
     }
 
     void prepare(uint64_t epoch, bool motion_blocked, double x, double y, smf_camera_input& input) {
-        if (worker_policy.epoch == epoch) {
-            if (worker_policy.flags & policy_edge_eligible) input.flags |= SMF_CAMERA_ALLOW_EDGE_SCROLL;
-            if (worker_policy.flags & policy_fullscreen) input.flags |= SMF_CAMERA_FULLSCREEN;
-            input.inspect_pane_height = worker_policy.inspect_height;
-            for (uint32_t i = 0; i < worker_policy.rect_count; ++i) {
-                const auto& r = worker_policy.rects[i];
-                if (x >= r.left && x < r.right && y >= r.top && y < r.bottom) input.flags |= SMF_CAMERA_POINTER_OVER_UI;
-            }
-        }
+        input_policy::apply(worker_policy, epoch, x, y, input);
 
         // One key impulse per step; stale and blocked ones are dropped.
         uint64_t end = head.load(std::memory_order_acquire);
@@ -475,7 +446,7 @@ namespace camera_control {
             }
             double px = (q.x - worker_geometry.x) * worker_geometry.scale_x;
             double py = (q.y - worker_geometry.y) * worker_geometry.scale_y;
-            if (!ready || !wheel_modifiers_allowed(worker_policy.flags, q.modifiers) || !policy_allows(worker_policy, epoch, px, py)) {
+            if (!ready || !wheel_modifiers_allowed(worker_policy.flags, q.modifiers) || !input_policy::wheel_position_allowed(worker_policy, epoch, px, py)) {
                 ++denied;
                 continue;
             }
