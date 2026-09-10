@@ -15,6 +15,9 @@ internal static class Program
             int bounds = CameraBoundsTests.Run();
             Console.WriteLine("PASS: " + bounds + " camera movement bounds contracts.");
 
+            int lifecycle = LifecycleTests.Run();
+            Console.WriteLine("PASS: " + lifecycle + " lifecycle contracts.");
+
             return 0;
         }
         catch (Exception error)

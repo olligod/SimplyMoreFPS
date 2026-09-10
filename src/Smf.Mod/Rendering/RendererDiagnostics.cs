@@ -93,13 +93,27 @@ internal static class RendererDiagnostics
 
     internal static void Error(string context, Exception error) => Error(context, FormatException(error));
 
+    internal static void Fallback(string context, Exception error) => Fallback(context, FormatException(error));
+
+    internal static void Fallback(string context, string detail)
+    {
+        string message = FormatMessage(context, detail);
+        WriteError(message);
+        RendererFailureNotice.Record(message);
+    }
+
     // The lifecycle dedupes repeated failures; nothing is suppressed here.
-    internal static void Error(string context, string detail)
+    internal static void Error(string context, string detail) => WriteError(FormatMessage(context, detail));
+
+    private static string FormatMessage(string context, string detail)
     {
         if (buildInfo == null) buildInfo = ReadBuildInfo();
 
-        string message = "[Simply More FPS] " + context + "\n" + buildInfo + "\n" + ReadDisplayConfiguration() + "\n" + detail;
+        return "[Simply More FPS] " + context + "\n" + buildInfo + "\n" + ReadDisplayConfiguration() + "\n" + detail;
+    }
 
+    private static void WriteError(string message)
+    {
         try
         {
             Log.Error(message);

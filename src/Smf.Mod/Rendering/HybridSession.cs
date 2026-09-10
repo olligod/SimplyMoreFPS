@@ -795,7 +795,7 @@ public static partial class HybridSession
             if (Core.LastFailure != null && reportedFailure != Core.LastFailure)
             {
                 reportedFailure = Core.LastFailure;
-                RendererDiagnostics.Error(DiagnosticContext("Renderer failed; restoring normal game rendering"), reportedFailure + "\n" + NativeDiagnostics());
+                RendererDiagnostics.Fallback(DiagnosticContext("Renderer failed; restoring normal game rendering"), reportedFailure + "\n" + NativeDiagnostics());
             }
 
             if (CleanupError != null && reportedCleanup != CleanupError)

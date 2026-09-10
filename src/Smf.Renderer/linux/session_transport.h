@@ -6,6 +6,10 @@
 
 namespace linux_session {
 
+    inline bool preparation_superseded(bool preparing, uint64_t serial, uint64_t content, uint64_t fence) {
+        return preparing && serial && content < fence;
+    }
+
     // One published packet plus its publication number and time stamp. GPU owners
     // use try_publish so a reader can never stall a copy or a present.
     template<class Packet>

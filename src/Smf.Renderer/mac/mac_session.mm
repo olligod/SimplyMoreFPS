@@ -1267,6 +1267,11 @@ SMF_MAC_API int smf_session_content_fence(uint64_t session, uint64_t revision) {
     }
 
     state.content_fence = revision;
+    if (preparation_superseded(is_prepare(pending.operation), pending.serial, pending.content_revision, revision)) {
+        // The old generation can no longer capture this content. Reject its ticket,
+        // but leave source and worker leases for the explicit GPU retirement path.
+        ack(0, 0, 2);
+    }
     return 0;
 }
 

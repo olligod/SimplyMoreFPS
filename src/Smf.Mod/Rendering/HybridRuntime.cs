@@ -53,7 +53,11 @@ public sealed class HybridRuntime : MonoBehaviour
         }
         catch (Exception error)
         {
-            if (!startupFailed) RendererDiagnostics.Error("Renderer initialization failed", error);
+            if (!startupFailed)
+            {
+                RendererDiagnostics.Fallback("Renderer initialization failed", error);
+            }
+
             startupFailed = true;
         }
 
@@ -62,6 +66,7 @@ public sealed class HybridRuntime : MonoBehaviour
             SmfMod.Settings.GameFpsTarget,
             HybridSession.DetachedRenderingActive);
         PerformanceMeter.Update();
+        RendererFailureNotice.Update();
     }
 
     private void InstallPlatform()

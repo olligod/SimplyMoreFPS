@@ -28,7 +28,8 @@ jobs:
             host: windows
             platform: windows
             runtime: win-x64
-          - os: ubuntu-24.04
+          # Keep native libraries loadable on Ubuntu 22.04 and newer.
+          - os: ubuntu-22.04
             host: linux
             platform: linux
             runtime: linux-x64
@@ -58,7 +59,7 @@ jobs:
         if: matrix.platform == 'linux'
         run: |
           # These packages need only Ubuntu's repositories.
-          sudo apt-get -o Dir::Etc::sourcelist=sources.list.d/ubuntu.sources -o Dir::Etc::sourceparts=- update
+          sudo apt-get -o Dir::Etc::sourcelist=sources.list -o Dir::Etc::sourceparts=- update
           sudo apt-get install -y clang zlib1g-dev libx11-dev libxext-dev libxi-dev libgl-dev libglx-dev mesa-common-dev
       - name: Build whole solution using compile-only game references
         run: dotnet build SimplyMoreFPS.sln -c Release -m:1 -p:UseRimWorldReferenceAssemblies=true

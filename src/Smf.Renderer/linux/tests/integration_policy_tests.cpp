@@ -15,6 +15,15 @@
 
 using namespace linux_session;
 
+static void preparation_policy_tests() {
+    assert(!preparation_superseded(true, 9, 6, 6));
+    assert(!preparation_superseded(true, 9, 6, 5));
+    assert(preparation_superseded(true, 9, 6, 7));
+    assert(preparation_superseded(true, 9, 6, 141));
+    assert(!preparation_superseded(false, 9, 6, 141));
+    assert(!preparation_superseded(true, 0, 6, 141));
+}
+
 static void storage_policy_tests() {
     slot_storage storage;
     storage.generation = 4;
@@ -142,6 +151,7 @@ int main() {
     assert(!wheel_modifiers_allowed(8 | wheel_shift, wheel_modifiers(false, false, true)));
 
     storage_policy_tests();
+    preparation_policy_tests();
 
     assert(classify_swap_route(false, true, false, false) == route_other_target);
     assert(classify_swap_route(true, false, true, true) == route_original);

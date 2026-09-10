@@ -47,7 +47,7 @@ Checked on Windows, 9 September 2026:
 - SMF and Butter++. Use SMF instead.
 - Camera+ and SimpleCameraSetting/Perspective Shift. Those mods conflict with each other.
 
-Version 0.3.8. Last updated: 9 September 2026.
+Version 0.3.9. Last updated: 10 September 2026.
 
 ## More from me
 
