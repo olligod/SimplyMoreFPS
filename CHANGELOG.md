@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.11 - 2026-09-10
+
+- Wait for a usable game window during renderer startup.
+- Fix Camera+ edge indicators drifting while panning.
+- Fix rendering getting stuck when a map changes during preparation.
+- Use normal rendering during Perspective Shift pawn control and Follow Me; resume SMF afterward.
+- Reclaim unused Mac render textures when the memory budget is full.
+- Share common camera and build code, and add a geometry provider API for mod compatibility.
+- Clarify the Game FPS target: RimWorld defaults to 22; lower values allow more simulation time.
+
 ## 0.3.10 - 2026-09-10
 
 - Fix mouse-wheel zoom while a building or zoning tool is selected.

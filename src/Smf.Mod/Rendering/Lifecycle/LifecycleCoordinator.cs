@@ -115,6 +115,7 @@ public sealed class LifecycleCoordinator
     private bool candidateWorld;
     private bool previousWorld;
     private bool userEnabled;
+    private bool renderingAllowed = true;
     private bool quitting;
     private bool faultLatched;
     private Command? pending;
@@ -123,21 +124,40 @@ public sealed class LifecycleCoordinator
 
     public Phase State { get; private set; } = Phase.Off;
 
-    public ulong Session { get; private set; }
+    public ulong Session
+    {
+        get; private set;
+    }
 
-    public int DrawDepth { get; private set; }
+    public int DrawDepth
+    {
+        get; private set;
+    }
 
-    public bool WaitingForOwnerRecovery { get; private set; }
+    public bool WaitingForOwnerRecovery
+    {
+        get; private set;
+    }
 
-    public bool ResourcesAbandonedToProcessExit { get; private set; }
+    public bool ResourcesAbandonedToProcessExit
+    {
+        get; private set;
+    }
 
-    public long StaleAcknowledgements { get; private set; }
+    public long StaleAcknowledgements
+    {
+        get; private set;
+    }
 
-    public string LastFailure { get; private set; }
+    public string LastFailure
+    {
+        get; private set;
+    }
 
     public bool Faulted => faultLatched;
 
     public bool UserEnabled => userEnabled;
+    public bool RenderingAllowed => renderingAllowed;
 
     public Command? Pending => pending;
 
@@ -156,7 +176,8 @@ public sealed class LifecycleCoordinator
     public void SetEnabled(bool enabled)
     {
         AssertMainThread();
-        if (enabled != userEnabled && WaitingForOwnerRecovery) RetryAfterOwnerRecovery();
+        if (enabled != userEnabled && WaitingForOwnerRecovery)
+            RetryAfterOwnerRecovery();
 
         // An explicit off/on cycle is the only way to retry after a fault.
         if (enabled && !userEnabled)
@@ -166,6 +187,13 @@ public sealed class LifecycleCoordinator
         }
 
         userEnabled = enabled;
+    }
+
+    // Temporary camera ownership changes must not reset a renderer fault.
+    public void SetRenderingAllowed(bool allowed)
+    {
+        AssertMainThread();
+        renderingAllowed = allowed;
     }
 
     public void ChangeContent(ulong revision, bool hasWorld)
@@ -215,7 +243,8 @@ public sealed class LifecycleCoordinator
     public void LeaveDraw()
     {
         AssertMainThread();
-        if (DrawDepth == 0) throw new InvalidOperationException("Unmatched draw exit.");
+        if (DrawDepth == 0)
+            throw new InvalidOperationException("Unmatched draw exit.");
         --DrawDepth;
     }
 
@@ -223,11 +252,13 @@ public sealed class LifecycleCoordinator
     {
         AssertMainThread();
         faultLatched = true;
-        if (LastFailure == null) LastFailure = error ?? "Owner failure";
+        if (LastFailure == null)
+            LastFailure = error ?? "Owner failure";
 
         // A managed exception never gets an acknowledgement, so a stop ticket
         // must be marked recoverable instead of waiting on it forever.
-        if (IsStopping()) WaitingForOwnerRecovery = true;
+        if (IsStopping())
+            WaitingForOwnerRecovery = true;
     }
 
     public void RequestQuit()
@@ -238,7 +269,8 @@ public sealed class LifecycleCoordinator
 
     private bool IsPendingPreparation(Command value)
     {
-        if (!pending.HasValue) return false;
+        if (!pending.HasValue)
+            return false;
 
         Command current = pending.Value;
         return current.Session == value.Session &&
@@ -309,7 +341,8 @@ public sealed class LifecycleCoordinator
     {
         AssertMainThread();
         sentWorldFence = acknowledgedWorldFence;
-        if (!WaitingForOwnerRecovery) return;
+        if (!WaitingForOwnerRecovery)
+            return;
 
         WaitingForOwnerRecovery = false;
         pending = null;
@@ -334,16 +367,21 @@ public sealed class LifecycleCoordinator
     public Command? AdvanceAtSafeBoundary(bool captureTargetsRestored)
     {
         AssertMainThread();
-        if (DrawDepth != 0 || State == Phase.Exited) return null;
+        if (DrawDepth != 0 || State == Phase.Exited)
+            return null;
 
-        bool stop = !userEnabled || quitting || faultLatched;
-        if (stop && State != Phase.Off && !IsStopping()) BeginStop();
-        if (reply.HasValue) AcceptReply();
-        if (WaitingForOwnerRecovery || pending.HasValue) return null;
+        bool stop = !userEnabled || !renderingAllowed || quitting || faultLatched;
+        if (stop && State != Phase.Off && !IsStopping())
+            BeginStop();
+        if (reply.HasValue)
+            AcceptReply();
+        if (WaitingForOwnerRecovery || pending.HasValue)
+            return null;
 
         // AcceptReply may have latched a fault, so decide again before picking a phase.
-        stop = !userEnabled || quitting || faultLatched;
-        if (stop && State != Phase.Off && !IsStopping()) BeginStop();
+        stop = !userEnabled || !renderingAllowed || quitting || faultLatched;
+        if (stop && State != Phase.Off && !IsStopping())
+            BeginStop();
 
         // A fault stops through the same retirement path as disabling, and stays
         // latched until an explicit off/on so Update cannot keep restarting a broken owner.
@@ -355,7 +393,8 @@ public sealed class LifecycleCoordinator
                 return null;
             }
 
-            if (stop || wantedContent == 0) return null;
+            if (stop || wantedContent == 0)
+                return null;
 
             Session = checked(Session + 1);
             sentWorldFence = acknowledgedWorldFence = 0;
@@ -364,7 +403,8 @@ public sealed class LifecycleCoordinator
 
         if (State == Phase.Active)
         {
-            if (activeContent == wantedContent) return null;
+            if (activeContent == wantedContent)
+                return null;
             State = Phase.InvalidatingWorld;
         }
 
@@ -397,7 +437,8 @@ public sealed class LifecycleCoordinator
                     return AdvanceAtSafeBoundary(captureTargetsRestored);
                 }
 
-                if (acknowledgedWorldFence != candidateContent) return null;
+                if (acknowledgedWorldFence != candidateContent)
+                    return null;
 
                 generation = candidateGeneration;
                 content = candidateContent;
@@ -454,7 +495,8 @@ public sealed class LifecycleCoordinator
         }
 
         bool releasesMain = operation == Operation.ReleaseGenerationMain || operation == Operation.ReleaseSessionMain;
-        if (!captureTargetsRestored && releasesMain) return null;
+        if (!captureTargetsRestored && releasesMain)
+            return null;
 
         preparationSubmitted = false;
         pending = new Command
@@ -513,7 +555,8 @@ public sealed class LifecycleCoordinator
 
         if (!valid)
         {
-            if (LastFailure == null) LastFailure = ack.Error ?? "Owner ACK lacked the required frame or ownership evidence.";
+            if (LastFailure == null)
+                LastFailure = ack.Error ?? "Owner ACK lacked the required frame or ownership evidence.";
             faultLatched = true;
             if (IsStopping())
             {

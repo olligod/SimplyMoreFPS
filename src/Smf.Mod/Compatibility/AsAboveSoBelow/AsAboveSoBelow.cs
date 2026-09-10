@@ -32,13 +32,20 @@ internal static class AsAboveSoBelow
     private static bool cachedInput;
     private static bool cachedCoverage;
 
+    internal static void RegisterGeometry()
+    {
+        CameraGeometryProviders.Register(PackageId, priority: 100, policy: Resolve);
+    }
+
     internal static CameraGeometryPolicy? Resolve(CameraContext context)
     {
-        if (!UnityData.IsInMainThread) throw new InvalidOperationException("Band geometry requires Unity main.");
+        if (!UnityData.IsInMainThread)
+            throw new InvalidOperationException("Band geometry requires Unity main.");
 
         try
         {
-            if (!bound) Bind();
+            if (!bound)
+                Bind();
             if (bandBounds == null || context.Map == null || context.Map != Find.CurrentMap || context.Map.Disposed)
                 return null;
             if (!bandBounds(context.Map, out float min, out float max))
@@ -56,18 +63,21 @@ internal static class AsAboveSoBelow
             {
                 levelLimits!(currentLevel!(context.Map), out float limit, out float rawMargin);
                 margin = Math.Max(0f, rawMargin);
-                if (clampZoom!()) maximum = limit > 0f ? limit : (max - min) * 0.5;
+                if (clampZoom!())
+                    maximum = limit > 0f ? limit : (max - min) * 0.5;
                 if (float.IsNaN(rawMargin) || float.IsInfinity(rawMargin) || float.IsNaN(limit) || float.IsInfinity(limit))
                     throw new InvalidOperationException("Non-finite band camera limits.");
             }
 
-            if (!movement && !input && !coverage) return null;
+            if (!movement && !input && !coverage)
+                return null;
 
             int width = context.Map.Size.x;
             bool unchanged = cachedPolicy != null && width == cachedWidth && min == cachedMin && max == cachedMax
                 && margin == cachedMargin && maximum == cachedMaximum
                 && movement == cachedMovement && input == cachedInput && coverage == cachedCoverage;
-            if (unchanged) return cachedPolicy;
+            if (unchanged)
+                return cachedPolicy;
 
             // No gutter on Z: the mod's own CurrentViewRect patch clips to the exact band rows.
             var policy = new CameraGeometryPolicy(
@@ -111,7 +121,8 @@ internal static class AsAboveSoBelow
         Type settings = RequireType("ABSettings");
         Type limitType = camera.GetNestedType("Limits", BindingFlags.Public | BindingFlags.NonPublic)
             ?? throw new TypeLoadException("AsAboveSoBelow.ABCameraBounds.Limits");
-        if (!limitType.IsValueType) throw new InvalidOperationException("Expected value-type camera Limits.");
+        if (!limitType.IsValueType)
+            throw new InvalidOperationException("Expected value-type camera Limits.");
 
         MethodInfo tryBandBounds = Compat.RequireMethod(view, "TryBandBounds", typeof(bool),
             typeof(Map), typeof(float).MakeByRefType(), typeof(float).MakeByRefType());

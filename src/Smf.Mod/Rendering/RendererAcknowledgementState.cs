@@ -11,8 +11,14 @@ internal sealed class RendererAcknowledgementState
     private readonly Dictionary<ulong, ulong> warmupMarkers = new Dictionary<ulong, ulong>();
     private Evidence routingEvidence;
 
-    internal Command? Pending { get; private set; }
-    internal ulong RoutingFrame { get; private set; }
+    internal Command? Pending
+    {
+        get; private set;
+    }
+    internal ulong RoutingFrame
+    {
+        get; private set;
+    }
 
     internal void ClearWarmupMarkers()
     {
@@ -87,6 +93,26 @@ internal sealed class RendererAcknowledgementState
             (flags & 2u) != 0 && revealFrame >= sourceFrame && revealFrame >= markerFrame &&
             submittedGeneration == wanted.Generation && submittedContent == wanted.ContentRevision &&
             submittedRestoreSerial == 0;
+    }
+
+    internal bool TrySupersedePreparation(ulong sourceFrame, Evidence evidence,
+        ulong contentFence, ulong contentAcknowledged, out Acknowledgement acknowledgement)
+    {
+        acknowledgement = default;
+        Command wanted = Pending.Value;
+        if (wanted.Operation != Operation.PrepareHiddenGeneration || sourceFrame == 0 ||
+            (evidence & Evidence.CompositeComplete) == 0 ||
+            contentAcknowledged <= wanted.ContentRevision || contentAcknowledged > contentFence)
+        {
+            return false;
+        }
+
+        // A completed native ACK survives later content fences. That old scene can no
+        // longer reveal; retire its prepared generation through the normal owner ACKs.
+        Complete(2, 0, evidence, sourceFrame, out acknowledgement);
+        acknowledgement.Error = "Prepared content " + wanted.ContentRevision +
+            " was superseded by acknowledged content " + contentAcknowledged + ".";
+        return true;
     }
 
     internal int Complete(uint disposition, int result, Evidence evidence, ulong sourceFrame, out Acknowledgement acknowledgement)

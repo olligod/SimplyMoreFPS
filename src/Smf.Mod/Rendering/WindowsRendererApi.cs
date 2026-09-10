@@ -29,9 +29,18 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
     private ulong fenceDelivered;
     private ulong fencePublished;
 
-    public IntPtr RenderEvent { get; }
-    public long ClockFrequency { get; }
-    public ulong PreviousSession { get; }
+    public IntPtr RenderEvent
+    {
+        get;
+    }
+    public long ClockFrequency
+    {
+        get;
+    }
+    public ulong PreviousSession
+    {
+        get;
+    }
 
     public WindowsRendererApi(string libraryPath, ulong unityWindow)
     {
@@ -78,7 +87,8 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
     public long ClockNow()
     {
         CheckMain();
-        if (!QueryPerformanceCounter(out long value)) throw new Win32Exception();
+        if (!QueryPerformanceCounter(out long value))
+            throw new Win32Exception();
         return value;
     }
 
@@ -88,7 +98,8 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
         if (command.Session != startedSession)
         {
             int started = startSession(window, command.Session);
-            if (started != 0) return started;
+            if (started != 0)
+                return started;
 
             // Windows would otherwise cover a blocked Unity window with a frozen ghost after a few seconds.
             if (!ghostingDisabled)
@@ -109,7 +120,8 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
             if (command.ContentRevision > fencePublished)
             {
                 int published = publishFence(command.Session, command.ContentRevision);
-                if (published != 0) return published;
+                if (published != 0)
+                    return published;
                 fencePublished = command.ContentRevision;
             }
         }
@@ -146,11 +158,14 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
     public int PublishWorldFence(WorldFence fence)
     {
         CheckMain();
-        if (fence.Session != startedSession) return 1;
-        if (fence.ContentRevision <= fencePublished) return 0;
+        if (fence.Session != startedSession)
+            return 1;
+        if (fence.ContentRevision <= fencePublished)
+            return 0;
 
         int result = publishFence(fence.Session, fence.ContentRevision);
-        if (result == 0) fencePublished = fence.ContentRevision;
+        if (result == 0)
+            fencePublished = fence.ContentRevision;
         return result;
     }
 
@@ -158,11 +173,14 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
     {
         CheckMain();
         fence = default;
-        if (startedSession == 0) return 1;
+        if (startedSession == 0)
+            return 1;
 
         int result = ReadStatus(out StatusPacket state);
-        if (result != 0) return result;
-        if (state.ContentAcknowledged == 0 || state.ContentAcknowledged <= fenceDelivered) return 1;
+        if (result != 0)
+            return result;
+        if (state.ContentAcknowledged == 0 || state.ContentAcknowledged <= fenceDelivered)
+            return 1;
 
         fenceDelivered = state.ContentAcknowledged;
         fence = new WorldFence { Session = state.Session, ContentRevision = fenceDelivered };
@@ -173,18 +191,21 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
     {
         CheckMain();
         acknowledgement = default;
-        if (!acknowledgements.Pending.HasValue) return 1;
+        if (!acknowledgements.Pending.HasValue)
+            return 1;
 
         Command wanted = acknowledgements.Pending.Value;
         if (wanted.Operation == Operation.StopWorker)
         {
             int joinResult = pollJoined(wanted.Session);
-            if (joinResult != 0) return joinResult;
+            if (joinResult != 0)
+                return joinResult;
         }
 
         var packet = new AckPacket { Size = 80, Version = 1 };
         int result = readAck(wanted.Session, wanted.Serial, ref packet, 80);
-        if (result != 0) return result;
+        if (result != 0)
+            return result;
         if (packet.Size != 80 || packet.Version != 1)
         {
             throw new InvalidOperationException("Native acknowledgment ABI mismatch.");
@@ -209,7 +230,14 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
         {
             // Stay pending until native has actually shown the marker frame for this generation.
             int read = ReadStatus(out StatusPacket state);
-            if (read != 0) return read;
+            if (read != 0)
+                return read;
+            if (acknowledgements.TrySupersedePreparation(sourceFrame, evidence,
+                state.ContentFence, state.ContentAcknowledged, out acknowledgement))
+            {
+                return 0;
+            }
+
             if (!acknowledgements.WarmupRevealed(sourceFrame, state.Flags, state.NativeRevealFrame,
                 state.NativeSubmittedGeneration, state.NativeSubmittedContent, state.NativeSubmittedRestoreSerial))
             {
@@ -324,7 +352,8 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
     private int ReadStatus(out StatusPacket state)
     {
         state = new StatusPacket { Size = 472, Version = 1 };
-        if (startedSession == 0) return 1;
+        if (startedSession == 0)
+            return 1;
 
         int result = queryStatus(ref state, 472);
         if (result == 0 && (state.Size != 472 || state.Version != 1 || state.Session != startedSession))
@@ -338,8 +367,10 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
         sample = default;
 
         int read = ReadStatus(out StatusPacket state);
-        if (read < 0) throw new InvalidOperationException("Windows presentation status failed: " + read);
-        if (read != 0 || state.Result < 0 || state.ActiveGeneration == 0) return false;
+        if (read < 0)
+            throw new InvalidOperationException("Windows presentation status failed: " + read);
+        if (read != 0 || state.Result < 0 || state.ActiveGeneration == 0)
+            return false;
 
         WindowsCompositionCadence.Read(out ulong count, out long timestamp);
         sample = new PresentationSample(state.Session, state.ActiveGeneration, count,
@@ -350,9 +381,12 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
     private static uint NativeFlags(FrameFlags flags)
     {
         uint native = (flags & FrameFlags.HasMap) != 0 ? 1u : 0u;
-        if ((flags & FrameFlags.WorldDispatchCompleted) != 0) native |= 2u;
-        if ((flags & FrameFlags.WorldDispatchAbsent) != 0) native |= 4u;
-        if ((flags & FrameFlags.FlipY) != 0) native |= 8u | 16u;
+        if ((flags & FrameFlags.WorldDispatchCompleted) != 0)
+            native |= 2u;
+        if ((flags & FrameFlags.WorldDispatchAbsent) != 0)
+            native |= 4u;
+        if ((flags & FrameFlags.FlipY) != 0)
+            native |= 8u | 16u;
         return native;
     }
 
@@ -378,7 +412,8 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
 
     private static void RequireSize<T>(int expected)
     {
-        if (Marshal.SizeOf(typeof(T)) != expected) throw new InvalidOperationException(typeof(T).Name + " ABI size mismatch.");
+        if (Marshal.SizeOf(typeof(T)) != expected)
+            throw new InvalidOperationException(typeof(T).Name + " ABI size mismatch.");
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 8)]

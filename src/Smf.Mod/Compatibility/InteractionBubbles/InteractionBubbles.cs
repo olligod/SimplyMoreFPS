@@ -12,7 +12,8 @@ internal static class InteractionBubbles
 
     internal static void Register()
     {
-        if (!ModsConfig.IsActive(PackageId)) return;
+        if (!ModsConfig.IsActive(PackageId))
+            return;
 
         try
         {

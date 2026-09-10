@@ -10,7 +10,8 @@ internal static class PerspectiveShift
 
     internal static void Register()
     {
-        if (!ModsConfig.IsActive(PackageId)) return;
+        if (!ModsConfig.IsActive(PackageId))
+            return;
 
         try
         {
@@ -26,7 +27,7 @@ internal static class PerspectiveShift
     private sealed class Provider : ICameraProvider
     {
         private readonly Type avatarConfig;
-        private readonly CameraPolicy policy = new CameraPolicy(allowDetachedMotion: false);
+        private readonly CameraPolicy policy = new CameraPolicy(allowDetachedRendering: false);
 
         public string Id => PackageId;
         public int Priority => 300;

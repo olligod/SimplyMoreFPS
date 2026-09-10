@@ -10,7 +10,8 @@ internal static class FollowMe
 
     internal static void Register()
     {
-        if (!ModsConfig.IsActive(PackageId)) return;
+        if (!ModsConfig.IsActive(PackageId))
+            return;
 
         try
         {
@@ -27,7 +28,7 @@ internal static class FollowMe
     {
         private readonly Func<object, bool> enabled;
         private readonly Func<object, bool> following;
-        private readonly CameraPolicy policy = new CameraPolicy(allowDetachedMotion: false);
+        private readonly CameraPolicy policy = new CameraPolicy(allowDetachedRendering: false);
 
         public string Id => PackageId;
         public int Priority => 250;

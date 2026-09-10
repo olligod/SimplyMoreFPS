@@ -20,16 +20,18 @@ public static partial class HybridSession
     public static bool Installed => current != null;
 
     internal static bool DetachedRenderingActive => current != null && current.Core.State == Phase.Active &&
-        current.Core.UserEnabled && !current.QuitRequested;
+        current.Core.UserEnabled && current.Core.RenderingAllowed && !current.QuitRequested;
 
     internal static string LastFailure => current?.Core.LastFailure;
 
     internal static bool TryReadPresentation(out PresentationSample sample)
     {
-        if (!Verse.UnityData.IsInMainThread) throw new InvalidOperationException("Presentation telemetry requires Unity main.");
+        if (!Verse.UnityData.IsInMainThread)
+            throw new InvalidOperationException("Presentation telemetry requires Unity main.");
         sample = default;
         Session session = current;
-        if (!DetachedRenderingActive || session == null) return false;
+        if (!DetachedRenderingActive || session == null)
+            return false;
         if (!(session.Native is IPresentationTelemetry telemetry))
             throw new NotSupportedException("Active renderer has no presentation telemetry capability.");
 
@@ -79,7 +81,8 @@ public static partial class HybridSession
     private static void InstallPlatform(string harmonyOwner, string nativeLibraryPath, string kernelLibraryPath,
         string builtinExtraPath, Func<INativeSession> createNative)
     {
-        if (current != null) throw new InvalidOperationException("The persistent session is already installed.");
+        if (current != null)
+            throw new InvalidOperationException("The persistent session is already installed.");
 
         var shaders = new GuiShaderResources(harmonyOwner + ".alpha", builtinExtraPath);
 
@@ -120,7 +123,8 @@ public static partial class HybridSession
 
     public static void Install(string harmonyOwner, INativeSession native, IMainSceneOwner scene, Material premultCopy)
     {
-        if (current != null) throw new InvalidOperationException("A persistent host is already installed.");
+        if (current != null)
+            throw new InvalidOperationException("A persistent host is already installed.");
         if (native == null || scene == null || premultCopy == null || premultCopy.shader == null || !premultCopy.shader.isSupported)
             throw new ArgumentException("Native owner, scene owner and a supported premultiplied-copy material are required.");
         if (native.RenderEvent == IntPtr.Zero || native.ClockFrequency <= 0)
@@ -145,10 +149,17 @@ public static partial class HybridSession
         RequireInstalled().Core.SetEnabled(enabled);
     }
 
+    internal static void SetRenderingAllowed(bool allowed)
+    {
+        RequireInstalled().Core.SetRenderingAllowed(allowed);
+    }
+
     internal static void ReportFailure(Exception error, string source)
     {
-        if (current != null) current.Fail(error, source);
-        else RendererDiagnostics.Error(source, error);
+        if (current != null)
+            current.Fail(error, source);
+        else
+            RendererDiagnostics.Error(source, error);
     }
 
     public static void RequestQuit()
@@ -162,7 +173,8 @@ public static partial class HybridSession
 
         try
         {
-            if (session.Native is IProcessExitFence exit) exit.FenceProcessExit();
+            if (session.Native is IProcessExitFence exit)
+                exit.FenceProcessExit();
         }
         catch (Exception error)
         {
@@ -173,6 +185,7 @@ public static partial class HybridSession
         {
             // Unity may never render another frame: restore main-owned routing, keep uncertain resources alive.
             session.EmergencyRestore();
+            session.CameraEdges?.Dispose();
             session.ReportQuitCleanup();
         }
     }
@@ -181,17 +194,23 @@ public static partial class HybridSession
     {
         Session session = RequireInstalled();
         session.CheckMain();
+        // Edge snapshots own no generation resources, but must finish before the host destroys their materials.
         if (session.Core.State != Phase.Off || session.Core.UserEnabled || session.Generations.Count != 0 ||
             session.Core.DrawDepth != 0 || !session.TargetsRestored || session.PendingSubmission.HasValue ||
-            session.PendingRouting.HasValue || session.pendingCancellations.Count != 0)
+            session.PendingRouting.HasValue || session.pendingCancellations.Count != 0 ||
+            (session.CameraEdges != null && session.CameraEdges.Pending))
             throw new InvalidOperationException("Only a fully disabled and retired host can be removed.");
 
-        if (session.Patches != null) session.Patches.UnpatchAll(session.OwnerId);
+        if (session.Patches != null)
+            session.Patches.UnpatchAll(session.OwnerId);
+        session.CameraEdges?.Dispose();
         session.PublishSelectionState(true);
         MapCoverageCapture.RemoveHooks();
-        if (session.Scene is IMainSceneLifetime sceneLifetime) sceneLifetime.Stop();
+        if (session.Scene is IMainSceneLifetime sceneLifetime)
+            sceneLifetime.Stop();
         current = null;
-        if (session.Owner != null) UnityEngine.Object.Destroy(session.Owner);
+        if (session.Owner != null)
+            UnityEngine.Object.Destroy(session.Owner);
     }
 
     public static void PumpAfterOwnerRecovery()
@@ -214,6 +233,7 @@ public static partial class HybridSession
             phase = session.Core.State.ToString(),
             session.Core.Session,
             enabled = session.Core.UserEnabled,
+            renderingAllowed = session.Core.RenderingAllowed,
             session.Core.DrawDepth,
             session.Core.WaitingForOwnerRecovery,
             session.Core.StaleAcknowledgements,
@@ -255,7 +275,8 @@ public static partial class HybridSession
 
         public void Update()
         {
-            if (Session != null && ReferenceEquals(current, Session)) Session.Tick();
+            if (Session != null && ReferenceEquals(current, Session))
+                Session.Tick();
         }
 
         private IEnumerator EndFrames()
@@ -276,7 +297,8 @@ public static partial class HybridSession
 
         public void OnApplicationQuit()
         {
-            if (Session == null || !ReferenceEquals(current, Session)) return;
+            if (Session == null || !ReferenceEquals(current, Session))
+                return;
             HybridSession.RequestQuit();
         }
     }
@@ -331,7 +353,8 @@ public static partial class HybridSession
 
         internal Session(string owner, INativeSession native, IMainSceneOwner scene, Material premultCopy)
         {
-            if (string.IsNullOrWhiteSpace(owner)) throw new ArgumentException("A unique Harmony owner is required.");
+            if (string.IsNullOrWhiteSpace(owner))
+                throw new ArgumentException("A unique Harmony owner is required.");
 
             Core = new LifecycleCoordinator(native is IRetainedNativeSession retained ? retained.PreviousSession : 0);
             OwnerId = owner;
@@ -355,7 +378,8 @@ public static partial class HybridSession
             UnityEngine.Object.DontDestroyOnLoad(Owner);
             Owner.AddComponent<PersistentPump>().Session = this;
 
-            if (Scene is IMainSceneLifetime sceneLifetime) sceneLifetime.Start(Owner);
+            if (Scene is IMainSceneLifetime sceneLifetime)
+                sceneLifetime.Start(Owner);
             InstallRasterHooks();
             MapCoverageCapture.InstallHooks(OwnerId);
         }
@@ -382,8 +406,10 @@ public static partial class HybridSession
         // Native results: 0 accepted, 1 busy, negative failure.
         private static bool Accepted(int result, string action)
         {
-            if (result < 0) throw new InvalidOperationException(action + " failed: 0x" + result.ToString("X8"));
-            if (result > 1) throw new InvalidOperationException(action + " returned an unknown result.");
+            if (result < 0)
+                throw new InvalidOperationException(action + " failed: 0x" + result.ToString("X8"));
+            if (result > 1)
+                throw new InvalidOperationException(action + " returned an unknown result.");
             return result == 0;
         }
 
@@ -391,8 +417,10 @@ public static partial class HybridSession
         {
             // A fence taken from the core is kept until native accepts it; a newer one simply replaces it.
             WorldFence? latest = Core.TakeWorldFence();
-            if (latest.HasValue) PendingFence = latest;
-            if (PendingFence.HasValue && Accepted(Native.PublishWorldFence(PendingFence.Value), "content fence")) PendingFence = null;
+            if (latest.HasValue)
+                PendingFence = latest;
+            if (PendingFence.HasValue && Accepted(Native.PublishWorldFence(PendingFence.Value), "content fence"))
+                PendingFence = null;
         }
 
         internal void Tick()
@@ -406,26 +434,32 @@ public static partial class HybridSession
                     throw new InvalidOperationException("Captured Repaint missed its EOF; preserve leases and recover native routing.");
 
                 DrainCancellations();
-                if (!Core.Faulted) ObserveContext();
+                if (!Core.Faulted)
+                    ObserveContext();
 
                 for (int i = 0; i < 4; ++i)
                 {
-                    if (!Accepted(Native.PollWorldFence(out WorldFence fence), "fence poll")) break;
+                    if (!Accepted(Native.PollWorldFence(out WorldFence fence), "fence poll"))
+                        break;
                     Core.AcknowledgeWorldFence(fence);
                 }
 
                 for (int i = 0; i < 8; ++i)
                 {
-                    if (!Accepted(Native.PollAcknowledgement(out Acknowledgement ack), "owner poll")) break;
+                    if (!Accepted(Native.PollAcknowledgement(out Acknowledgement ack), "owner poll"))
+                        break;
                     RecordOwnerAck(ack);
                     Core.Acknowledge(ack);
                 }
 
                 // A stop ticket replaces any busy older operation; the generation table survives that.
                 Command? next = Core.AdvanceAtSafeBoundary(TargetsRestored);
-                if (next.HasValue) PendingSubmission = next;
-                if (PendingSubmission.HasValue) Submit(PendingSubmission.Value);
-                if (PendingRouting.HasValue) CompleteRouting(PendingRouting.Value);
+                if (next.HasValue)
+                    PendingSubmission = next;
+                if (PendingSubmission.HasValue)
+                    Submit(PendingSubmission.Value);
+                if (PendingRouting.HasValue)
+                    CompleteRouting(PendingRouting.Value);
 
                 SendFence();
                 ReportLifecycleFailure();
@@ -440,9 +474,12 @@ public static partial class HybridSession
         private void RecordOwnerAck(Acknowledgement ack)
         {
             Command? pending = Core.Pending;
-            if (!pending.HasValue || !SameTicket(pending.Value, ack) || !ack.Success || ack.Superseded) return;
-            if ((ack.Evidence & pending.Value.Required) != pending.Value.Required) return;
-            if (ack.Operation == Operation.ActivateGeneration) ActiveGeneration = ack.Generation;
+            if (!pending.HasValue || !SameTicket(pending.Value, ack) || !ack.Success || ack.Superseded)
+                return;
+            if ((ack.Evidence & pending.Value.Required) != pending.Value.Required)
+                return;
+            if (ack.Operation == Operation.ActivateGeneration)
+                ActiveGeneration = ack.Generation;
 
             if (ack.Operation == Operation.StopWorker)
             {
@@ -458,7 +495,8 @@ public static partial class HybridSession
             if (ack.Operation == Operation.RetireSessionGpu)
             {
                 foreach (Generation generation in Generations.Values)
-                    if (generation.Session == ack.Session) generation.GpuRetired = true;
+                    if (generation.Session == ack.Session)
+                        generation.GpuRetired = true;
             }
         }
 
@@ -486,7 +524,8 @@ public static partial class HybridSession
         {
             if (command.Operation == Operation.ReleaseGenerationMain || command.Operation == Operation.ReleaseSessionMain)
             {
-                if (!TargetsRestored) return;
+                if (!TargetsRestored)
+                    return;
 
                 if (command.Operation == Operation.ReleaseGenerationMain)
                 {
@@ -495,7 +534,8 @@ public static partial class HybridSession
                 else
                 {
                     foreach (Generation generation in new List<Generation>(Generations.Values))
-                        if (generation.Session == command.Session) Release(generation);
+                        if (generation.Session == command.Session)
+                            Release(generation);
                 }
 
                 PendingSubmission = null;
@@ -512,12 +552,15 @@ public static partial class HybridSession
                     return;
                 }
 
-                if (!Generations.TryGetValue(command.Generation, out Generation created)) created = CreateGeneration(command);
-                if (!Accepted(Native.Submit(command, created.Context), "prepare generation")) return;
+                if (!Generations.TryGetValue(command.Generation, out Generation created))
+                    created = CreateGeneration(command);
+                if (!Accepted(Native.Submit(command, created.Context), "prepare generation"))
+                    return;
 
                 selectionSessionStarted = true;
                 Core.MarkPreparationSubmitted(command);
-                if (Scene is IMainSceneLifetime sceneLifetime) sceneLifetime.EnableCamera();
+                if (Scene is IMainSceneLifetime sceneLifetime)
+                    sceneLifetime.EnableCamera();
                 Capture = created;
                 CaptureRouting = true;
                 PendingSubmission = null;
@@ -525,7 +568,8 @@ public static partial class HybridSession
                 return;
             }
 
-            if (!Accepted(Native.Submit(command, Context), "session operation " + command.Operation)) return;
+            if (!Accepted(Native.Submit(command, Context), "session operation " + command.Operation))
+                return;
 
             PendingSubmission = null;
             if (command.Operation == Operation.RestoreNativeRouting)
@@ -557,12 +601,15 @@ public static partial class HybridSession
                 Scene.ReleaseCamera();
             }
 
-            if (!targets || ContextDepth != 0 || WorldDepth != 0) return;
-            if (!Scene.CameraReleased) return;
+            if (!targets || ContextDepth != 0 || WorldDepth != 0)
+                return;
+            if (!Scene.CameraReleased)
+                return;
 
             ulong frame = unchecked((ulong)Time.frameCount);
             Evidence facts = Evidence.NativeRoutingRestored | Evidence.CaptureScopesClosed | Evidence.CameraReleased;
-            if (!Accepted(Native.RoutingRestored(command, frame, facts), "routing restoration report")) return;
+            if (!Accepted(Native.RoutingRestored(command, frame, facts), "routing restoration report"))
+                return;
 
             RestoreSerial = command.Serial;
             PendingRouting = null;
@@ -570,7 +617,8 @@ public static partial class HybridSession
 
         private Generation RequireGeneration(ulong id)
         {
-            if (!Generations.TryGetValue(id, out Generation generation)) throw new InvalidOperationException("Unknown main resource generation.");
+            if (!Generations.TryGetValue(id, out Generation generation))
+                throw new InvalidOperationException("Unknown main resource generation.");
             return generation;
         }
 
@@ -593,7 +641,8 @@ public static partial class HybridSession
 
             generation.HudPointer = unchecked((ulong)generation.Hud.GetNativeTexturePtr().ToInt64());
             generation.WorldPointer = unchecked((ulong)generation.World.GetNativeTexturePtr().ToInt64());
-            if (generation.HudPointer == 0 || generation.WorldPointer == 0) throw new InvalidOperationException("Native capture texture is absent.");
+            if (generation.HudPointer == 0 || generation.WorldPointer == 0)
+                throw new InvalidOperationException("Native capture texture is absent.");
 
             return generation;
         }
@@ -622,7 +671,8 @@ public static partial class HybridSession
 
         private void Release(Generation generation)
         {
-            if (generation.Released) return;
+            if (generation.Released)
+                return;
             if (!generation.GpuRetired || !TargetsRestored ||
                 (generation.Hud != null && RenderTexture.active == generation.Hud) ||
                 (generation.World != null && RenderTexture.active == generation.World))
@@ -704,12 +754,14 @@ public static partial class HybridSession
         private void RecordCleanup(string source, Exception error)
         {
             string detail = source + "\n" + RendererDiagnostics.FormatException(error);
-            if (cleanupFailures.Add(detail)) CleanupError = CleanupError == null ? detail : CleanupError + "\n" + detail;
+            if (cleanupFailures.Add(detail))
+                CleanupError = CleanupError == null ? detail : CleanupError + "\n" + detail;
         }
 
         internal void ReportQuitCleanup()
         {
-            if (CleanupError == null || reportedCleanup == CleanupError) return;
+            if (CleanupError == null || reportedCleanup == CleanupError)
+                return;
             reportedCleanup = CleanupError;
             RendererDiagnostics.Error(DiagnosticContext("Renderer cleanup failed during application quit; resources remain retained"), CleanupError);
         }
@@ -731,7 +783,8 @@ public static partial class HybridSession
             {
                 const BindingFlags any = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
                 MethodInfo read = Native.GetType().GetMethod("ReadStatus", any);
-                if (read == null) return "native=" + Native.GetType().Name;
+                if (read == null)
+                    return "native=" + Native.GetType().Name;
 
                 var args = new object[] { null };
                 object result = read.Invoke(Native, args);
@@ -777,10 +830,12 @@ public static partial class HybridSession
             }
 
             // Count responsive main-thread time only; a game load is not a renderer stall.
-            if (Verse.LongEventHandler.AnyEventNowOrWaiting) return;
+            if (Verse.LongEventHandler.AnyEventNowOrWaiting)
+                return;
 
             transitionWait += Math.Min(elapsed, .1);
-            if (transitionWait < 15 || reportedTransitionWait) return;
+            if (transitionWait < 15 || reportedTransitionWait)
+                return;
 
             reportedTransitionWait = true;
             // Report only. A timeout cannot decide GPU ownership, so leases and the ack path stay intact.
@@ -819,10 +874,12 @@ public static partial class HybridSession
         internal void Fail(Exception error, string source)
         {
             CheckMain();
-            if (reportingFailure) return;
+            if (reportingFailure)
+                return;
 
             string failure = source + "\n" + RendererDiagnostics.FormatException(error);
-            if (Core.Faulted && Core.LastFailure != failure) RecordCleanup(source, error);
+            if (Core.Faulted && Core.LastFailure != failure)
+                RecordCleanup(source, error);
             Core.ReportFailure(failure);
             PendingSubmission = null;
             reportingFailure = true;
@@ -841,7 +898,8 @@ public static partial class HybridSession
                 }
 
                 // Balance the core even if restore failed; TargetHeld still blocks releasing uncertain resources.
-                while (Core.DrawDepth != 0) Core.LeaveDraw();
+                while (Core.DrawDepth != 0)
+                    Core.LeaveDraw();
                 ClearContextsAfterFailure();
                 ReportLifecycleFailure();
             }

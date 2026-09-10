@@ -18,7 +18,7 @@ Open **Options -> Mod settings -> Simply More FPS**.
 
 - **Enabled** turns the mod on or off.
 - **TPS boost**: turn down the **Game FPS target** to give simulation more time. RimWorld's default is **22**; try **15**. Camera FPS stays unchanged, but menus and animations may update less often.
-- **Show FPS/TPS** adds a small counter beside the date.
+- **Show FPS/TPS** adds a small counter below the date.
 
 ## Mod compatibility
 
@@ -43,12 +43,14 @@ Checked on Windows, 9-10 September 2026:
 - Adaptive TPS
 - AntiAliasing: FXAA, SMAA and sharpening. SSAA is unsupported.
 
+SMF and TPS boost pause while Perspective Shift or Follow Me controls the camera. Both resume automatically afterward.
+
 ### Don't mix
 
 - SMF and Butter++. Use SMF instead.
 - Camera+ and SimpleCameraSetting/Perspective Shift. Those mods conflict with each other.
 
-Version 0.3.10. Last updated: 10 September 2026.
+Version 0.3.11. Last updated: 10 September 2026.
 
 ## More from me
 

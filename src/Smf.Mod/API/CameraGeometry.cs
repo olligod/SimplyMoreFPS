@@ -1,14 +1,19 @@
 using System;
 using System.Runtime.CompilerServices;
-using SimplyMoreFPS.Compatibility;
 
 namespace SimplyMoreFPS.API;
 
 /// <summary>Size of the area the camera may move in; the fixed two-cell inset is applied on top.</summary>
 public readonly struct CameraMovementExtent
 {
-    public double Width { get; }
-    public double Height { get; }
+    public double Width
+    {
+        get;
+    }
+    public double Height
+    {
+        get;
+    }
 
     public CameraMovementExtent(double width, double height)
     {
@@ -29,10 +34,22 @@ public readonly struct CameraMovementExtent
 /// <summary>World-space bounds of what the renderer covers, independent of the map grid.</summary>
 public readonly struct CameraCoverageBounds
 {
-    public float MinX { get; }
-    public float MaxX { get; }
-    public float MinZ { get; }
-    public float MaxZ { get; }
+    public float MinX
+    {
+        get;
+    }
+    public float MaxX
+    {
+        get;
+    }
+    public float MinZ
+    {
+        get;
+    }
+    public float MaxZ
+    {
+        get;
+    }
 
     public CameraCoverageBounds(float minX, float maxX, float minZ, float maxZ)
     {
@@ -64,16 +81,15 @@ public static class CameraGeometry
     public static CameraGeometryPolicy GetPolicy(CameraContext context)
     {
         RequireContext(context);
-        if (VehicleMapFramework.HasVehiclePlanet(context.Map)) return DefaultPolicy;
-        return AsAboveSoBelow.Resolve(context) ?? DefaultPolicy;
+        return CameraGeometryProviders.ResolvePolicy(context) ?? DefaultPolicy;
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
     public static CameraMovementExtent GetMovementExtent(CameraContext context)
     {
         RequireContext(context);
-        if (VehicleMapFramework.HasVehiclePlanet(context.Map)) return new CameraMovementExtent(200, 200);
-        return new CameraMovementExtent(context.Map.Size.x, context.Map.Size.z);
+        return CameraGeometryProviders.ResolveMovementExtent(context)
+            ?? new CameraMovementExtent(context.Map.Size.x, context.Map.Size.z);
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]
@@ -82,9 +98,10 @@ public static class CameraGeometry
         RequireContext(context);
 
         CameraGeometryPolicy policy = GetPolicy(context) ?? throw new InvalidOperationException("Camera geometry policy cannot be null.");
-        if (policy.CoverageBounds.HasValue) return policy.CoverageBounds.Value;
-        if (VehicleMapFramework.HasVehiclePlanet(context.Map)) return new CameraCoverageBounds(-4, 204, -4, 204);
-        return new CameraCoverageBounds(-4, (float)context.Map.Size.x + 4, -4, (float)context.Map.Size.z + 4);
+        if (policy.CoverageBounds.HasValue)
+            return policy.CoverageBounds.Value;
+        return CameraGeometryProviders.ResolveCoverageBounds(context)
+            ?? new CameraCoverageBounds(-4, (float)context.Map.Size.x + 4, -4, (float)context.Map.Size.z + 4);
     }
 
     private static void RequireContext(CameraContext context)

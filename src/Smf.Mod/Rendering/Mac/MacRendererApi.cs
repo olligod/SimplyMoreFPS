@@ -37,9 +37,18 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     private ulong fencePublished;
     private ulong reportedFailureSession;
 
-    public IntPtr RenderEvent { get; }
-    public long ClockFrequency { get; }
-    public ulong PreviousSession { get; }
+    public IntPtr RenderEvent
+    {
+        get;
+    }
+    public long ClockFrequency
+    {
+        get;
+    }
+    public ulong PreviousSession
+    {
+        get;
+    }
 
     public static int FindOriginalWindow(string bundleDirectory, out ulong originalWindow)
     {
@@ -116,7 +125,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     public void FenceProcessExit()
     {
         RequireMainThread();
-        if (quit() != 0) throw new InvalidOperationException("Mac native process-exit fence failed.");
+        if (quit() != 0)
+            throw new InvalidOperationException("Mac native process-exit fence failed.");
     }
 
     public int Submit(Command value, SceneContext context)
@@ -125,7 +135,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
         if (value.Session != startedSession)
         {
             int started = start(window, value.Session);
-            if (started != 0) return started;
+            if (started != 0)
+                return started;
 
             startedSession = value.Session;
             fenceDelivered = 0;
@@ -138,7 +149,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             if (sourceTargetSession != value.Session)
             {
                 int enabled = enableSourceTarget(value.Session);
-                if (enabled != 0) return enabled;
+                if (enabled != 0)
+                    return enabled;
                 sourceTargetSession = value.Session;
             }
 
@@ -147,7 +159,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             if (value.ContentRevision > fencePublished)
             {
                 int published = fence(value.Session, value.ContentRevision);
-                if (published != 0) return published;
+                if (published != 0)
+                    return published;
                 fencePublished = value.ContentRevision;
             }
         }
@@ -185,17 +198,21 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     public int PublishWorldFence(WorldFence value)
     {
         RequireMainThread();
-        if (value.Session != startedSession) return 1;
-        if (value.ContentRevision <= fencePublished) return 0;
+        if (value.Session != startedSession)
+            return 1;
+        if (value.ContentRevision <= fencePublished)
+            return 0;
 
         int result = fence(value.Session, value.ContentRevision);
-        if (result == 0) fencePublished = value.ContentRevision;
+        if (result == 0)
+            fencePublished = value.ContentRevision;
         return result;
     }
 
     private static bool ReportNativeFailureOnce(ulong session, int result, ref ulong reported)
     {
-        if (session == 0 || result >= 0 || reported == session) return false;
+        if (session == 0 || result >= 0 || reported == session)
+            return false;
         reported = session;
         return true;
     }
@@ -213,15 +230,19 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     {
         RequireMainThread();
         value = default;
-        if (startedSession == 0) return 1;
+        if (startedSession == 0)
+            return 1;
 
         int result = ReadStatus(out StatusPacket state);
-        if (result != 0) return result;
+        if (result != 0)
+            return result;
 
         // Report a permanent owner fault once; throwing every poll would stop
         // the lifecycle from reaching cleanup.
-        if (ReportNativeFailureOnce(state.Session, state.Result, ref reportedFailureSession)) return state.Result;
-        if (state.ContentAcknowledged == 0 || state.ContentAcknowledged <= fenceDelivered) return 1;
+        if (ReportNativeFailureOnce(state.Session, state.Result, ref reportedFailureSession))
+            return state.Result;
+        if (state.ContentAcknowledged == 0 || state.ContentAcknowledged <= fenceDelivered)
+            return 1;
 
         fenceDelivered = state.ContentAcknowledged;
         value = new WorldFence { Session = state.Session, ContentRevision = fenceDelivered };
@@ -232,17 +253,20 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     {
         RequireMainThread();
         value = default;
-        if (!acknowledgements.Pending.HasValue) return 1;
+        if (!acknowledgements.Pending.HasValue)
+            return 1;
         Command wanted = acknowledgements.Pending.Value;
         if (wanted.Operation == Operation.StopWorker)
         {
             int joinResult = joined(wanted.Session);
-            if (joinResult != 0) return joinResult;
+            if (joinResult != 0)
+                return joinResult;
         }
 
         var packet = new AckPacket { Size = 80, Version = 1 };
         int result = ack(wanted.Session, wanted.Serial, ref packet, 80);
-        if (result != 0) return result;
+        if (result != 0)
+            return result;
 
         if (packet.Size != 80 || packet.Version != 1)
         {
@@ -269,7 +293,14 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             // Submission alone is not a reveal. Stay pending until native has
             // actually shown a frame composited from our source.
             int read = ReadStatus(out StatusPacket state);
-            if (read != 0) return read;
+            if (read != 0)
+                return read;
+
+            if (acknowledgements.TrySupersedePreparation(sourceFrame, evidence,
+                state.ContentFence, state.ContentAcknowledged, out value))
+            {
+                return 0;
+            }
 
             if (!acknowledgements.WarmupRevealed(sourceFrame, state.Flags, state.NativeRevealFrame,
                 state.NativeSubmittedGeneration, state.NativeSubmittedContent, state.NativeSubmittedRestoreSerial))
@@ -295,7 +326,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
         RequireMainThread();
         dispatch = default;
         int staged = StageCurrentSourceTarget(ref value);
-        if (staged != 0) return staged;
+        if (staged != 0)
+            return staged;
 
         var packet = new PreGuiPacket
         {
@@ -360,7 +392,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
         if (!value.BeginOnly)
         {
             int staged = StageCurrentNativeTarget(ref value);
-            if (staged != 0) return staged;
+            if (staged != 0)
+                return staged;
         }
 
         var packet = new NativeFramePacket
@@ -396,7 +429,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     private int ReadStatus(out StatusPacket value)
     {
         value = new StatusPacket { Size = 472, Version = 1 };
-        if (startedSession == 0) return 1;
+        if (startedSession == 0)
+            return 1;
         int result = status(ref value, 472);
         if (result == 0 && (value.Size != 472 || value.Version != 1 || value.Session != startedSession))
             throw new InvalidOperationException("Session status ABI/session mismatch.");
@@ -428,8 +462,10 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             var value = new GeometryFailurePacket { Size = 96, Version = 1 };
             int result = read(ref value, 96);
 
-            if (result != 0) return "geometryFailureRead=" + result;
-            if (value.Size != 96 || value.Version != 1) return "geometryFailureAbiMismatch";
+            if (result != 0)
+                return "geometryFailureRead=" + result;
+            if (value.Size != 96 || value.Version != 1)
+                return "geometryFailureAbiMismatch";
 
             var text = new StringBuilder("Mac display setup failed: ").Append(GeometryFailureReason(value.Reason));
             text.Append("; game image=").Append(value.RequestedWidth).Append('x').Append(value.RequestedHeight)
@@ -453,24 +489,36 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     {
         switch (reason)
         {
-            case 1: return "the original Unity window or attached rendering layer is unavailable";
-            case 2: return "the window bounds or display scale are invalid";
-            case 3: return "the window pixel dimensions are unsupported";
-            case 4: return "Unity's rendering layer has an unsupported layout, transform, or drawable size";
-            case 5: return "Unity's color format or extended dynamic range mode is unsupported";
-            case 6: return "the captured image and original window do not share the same Metal device";
-            case 7: return "the game image size differs from the window's physical pixel size";
-            case 8: return "the attached rendering layer changed Metal device";
-            default: return "unclassified geometry failure (reason " + reason + ")";
+            case 1:
+                return "the original Unity window or attached rendering layer is unavailable";
+            case 2:
+                return "the window bounds or display scale are invalid";
+            case 3:
+                return "the window pixel dimensions are unsupported";
+            case 4:
+                return "Unity's rendering layer has an unsupported layout, transform, or drawable size";
+            case 5:
+                return "Unity's color format or extended dynamic range mode is unsupported";
+            case 6:
+                return "the captured image and original window do not share the same Metal device";
+            case 7:
+                return "the game image size differs from the window's physical pixel size";
+            case 8:
+                return "the attached rendering layer changed Metal device";
+            default:
+                return "unclassified geometry failure (reason " + reason + ")";
         }
     }
 
     private static uint EncodeFlags(FrameFlags flags)
     {
         uint native = (flags & FrameFlags.HasMap) != 0 ? 1u : 0u;
-        if ((flags & FrameFlags.WorldDispatchCompleted) != 0) native |= 2u;
-        if ((flags & FrameFlags.WorldDispatchAbsent) != 0) native |= 4u;
-        if ((flags & FrameFlags.FlipY) != 0) native |= 8u | 16u;
+        if ((flags & FrameFlags.WorldDispatchCompleted) != 0)
+            native |= 2u;
+        if ((flags & FrameFlags.WorldDispatchAbsent) != 0)
+            native |= 4u;
+        if ((flags & FrameFlags.FlipY) != 0)
+            native |= 8u | 16u;
 
         return native;
     }
@@ -479,15 +527,19 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
     {
         RequireMainThread();
         sample = default;
-        if (startedSession == 0) return false;
+        if (startedSession == 0)
+            return false;
 
         // Bound lazily so a bundle without the meter export still installs.
-        if (presentation == null) presentation = module.Bind<PresentationFn>("smf_mac_presentation");
+        if (presentation == null)
+            presentation = module.Bind<PresentationFn>("smf_mac_presentation");
 
         var packet = new PresentationPacket { Size = 48, Version = 1 };
         int result = presentation(ref packet, 48);
-        if (result < 0) throw new InvalidOperationException("Metal presentation telemetry failed: " + result);
-        if (result != 0) return false;
+        if (result < 0)
+            throw new InvalidOperationException("Metal presentation telemetry failed: " + result);
+        if (result != 0)
+            return false;
         if (packet.Size != 48 || packet.Version != 1 || packet.Session != startedSession || packet.Generation == 0 || packet.Frequency <= 0)
             throw new InvalidOperationException("Metal presentation telemetry ABI/session mismatch.");
 
