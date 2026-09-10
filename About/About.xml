@@ -3,7 +3,7 @@
   <name>Simply More FPS</name>
   <author>Olli</author>
   <packageId>olli.simplymorefps</packageId>
-  <modVersion>0.3.8</modVersion>
+  <modVersion>0.3.9</modVersion>
   <supportedVersions>
     <li>1.6</li>
   </supportedVersions>

@@ -169,6 +169,7 @@ namespace linux_session {
         bool has_deferred = false;
 
         int apply_command(const command_packet*);
+        void reject_obsolete_preparation();
 
         void publish_status(bool boundary = false) {
             status_packet current = state;
@@ -214,6 +215,7 @@ namespace linux_session {
         void apply_inbox() {
             uint64_t content = requested_content.load(std::memory_order_acquire);
             if (content > state.content_fence) state.content_fence = content;
+            reject_obsolete_preparation();
 
             command_packet next{};
             if (has_deferred) {
@@ -264,6 +266,13 @@ namespace linux_session {
                                pending.operation, evidence, result, disposition, state.worker_completed, native_now()};
             state.last_ack_serial = pending.serial;
             pending = {};
+        }
+
+        void reject_obsolete_preparation() {
+            if (preparation_superseded(is_prepare(pending.operation), pending.serial, pending.content_revision, state.content_fence)) {
+                // Keep GL resources and queued dispatches until their retirement ACK.
+                ack(0, 0, 2);
+            }
         }
 
         void fail_at(int error, uint32_t line, const uint64_t* draw = nullptr) {
@@ -1479,10 +1488,15 @@ namespace linux_session {
             }
 
             if (is_prepare(p->operation)) {
-                if (p->width < 1 || p->height < 1 || p->width > 16384 || p->height > 16384 || p->content_revision != state.content_fence) {
+                if (p->width < 1 || p->height < 1 || p->width > 16384 || p->height > 16384 ||
+                    !p->content_revision || p->content_revision > state.content_fence) {
                     ack(0, malformed, 3);
                     return 0;
                 }
+
+                // The main-thread inbox may have accepted this before a newer fence.
+                reject_obsolete_preparation();
+                if (!pending.serial) return 0;
 
                 generation_state* g = find_generation(p->generation);
                 if (!g) {

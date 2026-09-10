@@ -20,6 +20,15 @@ int main() {
     }
 
     using namespace mac;
+    // A newer fence ends a pending preparation even before its first frame.
+    // Equal/older fences and all non-prepare operations keep their real result.
+    assert(!preparation_superseded(true, 9, 6, 6));
+    assert(!preparation_superseded(true, 9, 6, 5));
+    assert(preparation_superseded(true, 9, 6, 7));
+    assert(preparation_superseded(true, 9, 6, 141));
+    assert(!preparation_superseded(false, 9, 6, 141));
+    assert(!preparation_superseded(true, 0, 6, 141));
+
     mac_source_target target{64, 1, 7, 8, 9, 100, 0x1000, 1280, 720, 0, 0};
     session_pre_gui pre{64, 1, 7, 8, 9, 100, 1280, 720, 0, 1, 0};
     assert(valid_source_target(target) && source_target_matches(target, pre));

@@ -3,6 +3,10 @@
 
 namespace mac {
 
+    inline bool preparation_superseded(bool preparing, uint64_t serial, uint64_t content, uint64_t fence) {
+        return preparing && serial && content < fence;
+    }
+
     // Called after the main pump: a capture can trigger the first native fault.
     // Native markers keep their own identity and retirement policy during restore.
     inline int capture_queue_owner_result(uint32_t kind, int owner_result) {

@@ -10,4 +10,6 @@
   <SMF_TpsBoostUnavailable>TPS boost couldn't start. See the game log for details.</SMF_TpsBoostUnavailable>
   <SMF_ShowMeter>Show FPS/TPS</SMF_ShowMeter>
   <SMF_MeterFormat>{0} FPS / {1} TPS</SMF_MeterFormat>
+  <SMF_RendererFallback>Simply More FPS stopped after an error and is falling back to normal game rendering. Your save is unaffected.\n\nPlease copy the error and include it when reporting the issue.</SMF_RendererFallback>
+  <SMF_CopyError>Copy error</SMF_CopyError>
 </LanguageData>

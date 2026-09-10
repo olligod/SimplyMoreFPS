@@ -337,6 +337,12 @@ public static partial class NativeCameraBridge
             MaxSize = state.MaxSize
         };
 
+        // Loading still publishes an inactive bundle; foreign geometry needs a ready map.
+        if (!MapSceneReadiness.Ready)
+        {
+            return result;
+        }
+
         Map map = Find.CurrentMap;
         CameraDriver driver = Find.CameraDriver;
         if (map == null || driver == null || driver.config == null || map.uniqueID != state.MapId) return result;
