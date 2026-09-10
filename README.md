@@ -26,7 +26,7 @@ Works with most mods. Mods that replace camera controls or rendering may need a 
 
 Replaces Butter++. With **TPS boost**, you usually won't need FPS Stabilizer or Adaptive TPS either.
 
-Checked on Windows, 9 September 2026:
+Checked on Windows, 9-10 September 2026:
 
 - Camera+
 - SimpleCameraSetting
@@ -41,9 +41,6 @@ Checked on Windows, 9 September 2026:
 - Follow Me 1.6
 - FPS Stabilizer
 - Adaptive TPS
-
-Checked on Windows, 10 September 2026:
-
 - AntiAliasing: FXAA, SMAA and sharpening. SSAA is unsupported.
 
 ### Don't mix
