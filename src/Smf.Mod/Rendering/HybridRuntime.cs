@@ -1,7 +1,5 @@
 using System;
 using System.IO;
-using System.Runtime.InteropServices;
-using System.Text;
 using SimplyMoreFPS.Performance;
 using UnityEngine;
 using UnityEngine.Rendering;
@@ -16,6 +14,8 @@ public sealed class HybridRuntime : MonoBehaviour
     private string folder = "";
     private bool wanted;
     private bool startupFailed;
+    private readonly RendererWindowStartup gameWindow = new RendererWindowStartup(message =>
+        Verse.Log.Message("[Simply More FPS] " + message));
 
     internal static void Initialize(string modFolder, bool enabled)
     {
@@ -33,7 +33,12 @@ public sealed class HybridRuntime : MonoBehaviour
     internal static void SetEnabled(bool enabled)
     {
         if (instance == null) return;
-        if (enabled && !instance.wanted) instance.startupFailed = false;
+        if (enabled && !instance.wanted)
+        {
+            instance.startupFailed = false;
+            instance.gameWindow.Reset();
+        }
+
         instance.wanted = enabled;
     }
 
@@ -86,8 +91,12 @@ public sealed class HybridRuntime : MonoBehaviour
                 string renderer = Path.Combine(native, "Smf.Renderer.dll");
                 string camera = Path.Combine(native, "Smf.Camera.dll");
 
+                if (!gameWindow.TryFind(WindowsGameWindow.Find, out ulong window))
+                {
+                    return;
+                }
+
                 RequireFiles(renderer, camera, builtin);
-                ulong window = unchecked((ulong)FindOwnUnityWindow().ToInt64());
                 HybridSession.InstallWindows(owner, renderer, camera, window, builtin);
                 break;
             }
@@ -101,7 +110,16 @@ public sealed class HybridRuntime : MonoBehaviour
                 string camera = Path.Combine(native, "libSmf.Camera.so");
 
                 RequireFiles(renderer, camera, builtin);
-                HybridSession.InstallLinux(owner, renderer, camera, builtin);
+                if (!gameWindow.TryFind(() =>
+                    {
+                        int result = LinuxRendererApi.FindOriginalWindow(renderer, out ulong handle);
+                        return RendererWindow.FromNative("Linux/X11", result, handle);
+                    }, out ulong window))
+                {
+                    return;
+                }
+
+                HybridSession.InstallLinux(owner, renderer, camera, window, builtin);
                 break;
             }
 
@@ -116,7 +134,16 @@ public sealed class HybridRuntime : MonoBehaviour
                 // The mac player keeps unity_builtin_extra one level deeper inside the app bundle.
                 builtin = Path.Combine(Application.dataPath, "Resources", "Data", "Resources", "unity_builtin_extra");
                 RequireFiles(Path.Combine(renderer, "Contents", "MacOS", "Smf.Renderer"), camera, builtin);
-                HybridSession.InstallMac(owner, renderer, camera, builtin);
+                if (!gameWindow.TryFind(() =>
+                    {
+                        int result = MacRendererApi.FindOriginalWindow(renderer, out ulong handle);
+                        return RendererWindow.FromNative("macOS/Metal", result, handle);
+                    }, out ulong window))
+                {
+                    return;
+                }
+
+                HybridSession.InstallMac(owner, renderer, camera, window, builtin);
                 break;
             }
 
@@ -148,76 +175,4 @@ public sealed class HybridRuntime : MonoBehaviour
     }
 
     private void OnDisable() => GameFrameBudget.Update(false, SmfMod.Settings.GameFpsTarget, false);
-
-    private static IntPtr FindOwnUnityWindow()
-    {
-        uint process = GetCurrentProcessId();
-        IntPtr result = IntPtr.Zero;
-        bool ambiguous = false;
-
-        bool enumerated = EnumWindows((window, unused) =>
-        {
-            GetWindowThreadProcessId(window, out uint owner);
-            if (owner != process || !IsWindowVisible(window)) return true;
-
-            var name = new StringBuilder(128);
-            if (GetClassName(window, name, name.Capacity) == 0 || name.ToString() != "UnityWndClass") return true;
-            if (!GetClientRect(window, out ClientRect client) || client.Right <= client.Left || client.Bottom <= client.Top) return true;
-
-            if (result != IntPtr.Zero) ambiguous = true;
-            result = window;
-            return true;
-        }, IntPtr.Zero);
-
-        if (!enumerated) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-        if (result == IntPtr.Zero || ambiguous)
-        {
-            throw new InvalidOperationException("A unique visible Unity window belonging to this game process is required.");
-        }
-
-        // Check again after the enumeration in case the window went away meanwhile.
-        GetWindowThreadProcessId(result, out uint finalOwner);
-        if (!IsWindow(result) || finalOwner != process)
-        {
-            throw new InvalidOperationException("The original Unity window changed during renderer initialization.");
-        }
-
-        return result;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct ClientRect
-    {
-        public int Left;
-        public int Top;
-        public int Right;
-        public int Bottom;
-    }
-
-    private delegate bool EnumWindowCallback(IntPtr window, IntPtr parameter);
-
-    [DllImport("kernel32.dll", ExactSpelling = true)]
-    private static extern uint GetCurrentProcessId();
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool EnumWindows(EnumWindowCallback callback, IntPtr parameter);
-
-    [DllImport("user32.dll")]
-    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
-
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    private static extern int GetClassName(IntPtr window, StringBuilder name, int maximum);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindow(IntPtr window);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool IsWindowVisible(IntPtr window);
-
-    [DllImport("user32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetClientRect(IntPtr window, out ClientRect rect);
 }

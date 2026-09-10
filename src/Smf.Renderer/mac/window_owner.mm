@@ -242,18 +242,37 @@ SMF_MAC_API int32_t smf_mac_find_original_window(uint64_t* original_window) {
     if (!pthread_main_np() || !original_window) return E_INVALIDARG;
 
     *original_window = 0;
+    uint64_t drawable_window = 0;
+    bool suspended = false;
     for (NSWindow* candidate in NSApp.windows) {
-        if (!candidate.contentView || !candidate.visible) continue;
+        if (!candidate.contentView) continue;
 
         auto found = [NSMutableArray<NSView*> array];
         mac::find_views(candidate.contentView, found);
-        if (found.count) {
-            if (found.count != 1 || *original_window) return E_NOTIMPL;
-            *original_window = (uint64_t)(__bridge void*)candidate;
+        if (!found.count) continue;
+        if (!candidate.visible || candidate.miniaturized) {
+            suspended = true;
+            continue;
         }
+
+        if (found.count != 1) return 2;
+
+        NSView* view = found[0];
+        NSSize size = view.bounds.size;
+        if (!std::isfinite(size.width) || !std::isfinite(size.height)) return E_INVALIDARG;
+        if (view.hiddenOrHasHiddenAncestor || size.width <= 0 || size.height <= 0) {
+            suspended = true;
+            continue;
+        }
+
+        if (drawable_window) return 2;
+        drawable_window = (uint64_t)(__bridge void*)candidate;
     }
 
-    return *original_window ? 0 : 1;
+    // A known window can resume; keep it distinct from missing ownership.
+    *original_window = drawable_window;
+    if (drawable_window) return 0;
+    return suspended ? 3 : 1;
 }
 
 // Diagnostics: cached scalar facts read on main; AppKit is never polled again.

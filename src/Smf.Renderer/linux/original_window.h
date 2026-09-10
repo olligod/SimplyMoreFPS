@@ -53,9 +53,17 @@ namespace linux_session {
     struct window_selection {
         window_candidate selected{};
         uint32_t count = 0;
+        uint32_t suspended = 0;
 
         void observe(const window_candidate& c, uint32_t pid) {
-            if (!eligible_window(c, pid) || c.window == selected.window) return;
+            if (!eligible_window(c, pid)) {
+                if (c.window && c.root && c.pid == pid && pid && c.input_output && !c.owned_ancestor &&
+                    (!c.viewable || !c.width || !c.height)) {
+                    ++suspended;
+                }
+                return;
+            }
+            if (c.window == selected.window) return;
             if (!count) selected = c;
             ++count;
         }
@@ -64,7 +72,8 @@ namespace linux_session {
             if (!error_free) return -4;
             if (!complete) return -5;
             if (count > 1) return 2;
-            return count == 1 ? 0 : 1;
+            if (count == 1) return 0;
+            return suspended ? 3 : 1;
         }
     };
 

@@ -61,13 +61,19 @@ public static partial class HybridSession
     }
 
     public static void InstallMac(string harmonyOwner, string nativeBundleDirectory, string kernelLibraryPath,
+        ulong unityWindow, string builtinExtraPath)
+    {
+        InstallPlatform(harmonyOwner, nativeBundleDirectory, kernelLibraryPath, builtinExtraPath,
+            () => new MacRendererApi(nativeBundleDirectory, unityWindow));
+    }
+
+    public static void InstallMac(string harmonyOwner, string nativeBundleDirectory, string kernelLibraryPath,
         string builtinExtraPath)
     {
         int result = MacRendererApi.FindOriginalWindow(nativeBundleDirectory, out ulong window);
         if (result != 0 || window == 0)
             throw new InvalidOperationException("The original Unity Metal window is not uniquely available: " + result);
-        InstallPlatform(harmonyOwner, nativeBundleDirectory, kernelLibraryPath, builtinExtraPath,
-            () => new MacRendererApi(nativeBundleDirectory, window));
+        InstallMac(harmonyOwner, nativeBundleDirectory, kernelLibraryPath, window, builtinExtraPath);
     }
 
     private static void InstallPlatform(string harmonyOwner, string nativeLibraryPath, string kernelLibraryPath,
