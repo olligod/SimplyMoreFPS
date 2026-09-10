@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.10 - 2026-09-10
+
+- Fix mouse-wheel zoom while a building or zoning tool is selected.
+- Support AntiAliasing's FXAA, SMAA and sharpening effects.
+- Show a clear fallback error for unsupported AntiAliasing SSAA mode, including while paused.
+
 ## 0.3.9 - 2026-09-10
 
 - Fix rendering getting stuck after resizing the Mac game window.
