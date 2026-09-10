@@ -22,6 +22,20 @@ int main() {
     assert(s.result(false, true) == -5);
     assert(s.result(true, false) == -4);
 
+    window_selection hidden;
+    auto minimized = valid;
+    minimized.viewable = false;
+    hidden.observe(minimized, 123);
+    assert(hidden.count == 0 && hidden.suspended == 1);
+    assert(hidden.result(true, true) == 3);
+    hidden.observe(valid, 123);
+    assert(hidden.result(true, true) == 0);
+
+    window_selection foreign_hidden;
+    minimized.pid = 999;
+    foreign_hidden.observe(minimized, 123);
+    assert(foreign_hidden.result(true, true) == 1);
+
     for (unsigned test = 0; test < 7; test++) {
         auto bad = valid;
         switch (test) {

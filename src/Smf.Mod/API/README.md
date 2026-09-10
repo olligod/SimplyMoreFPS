@@ -8,6 +8,7 @@ Everything below runs on Unity's main thread unless noted.
 Built-in shims for Camera+, SimpleCameraSetting, Perspective Shift, Follow Me, Vehicle Map
 Framework, As Above So Below and Interaction Bubbles live in `../Compatibility`. If your mod
 is popular and you would rather not depend on us, a shim there works too.
+Each integration has its own folder; shared binding helpers stay in `Compat.cs`.
 
 ## Read and move the camera
 
@@ -29,10 +30,10 @@ keeps moving while the main thread is stalled.
 
 ## Your mod controls camera speed or zoom
 
-Register a provider. `Resolve` is called on the main thread when the camera is set up and
-whenever the map or camera config changes. Return a policy, or null to let the next provider
-(or vanilla) decide. Highest `Priority` wins. Do not keep `context.Driver` or `context.Map`
-inside the policy.
+Register a provider. `Resolve` runs on the main thread during camera setup and updates,
+so keep it cheap and reuse unchanged policies. Return a policy, or null to let the next
+provider (or vanilla) decide. Highest `Priority` wins. Do not keep `context.Driver` or
+`context.Map` inside the policy.
 
 ```csharp
 using SimplyMoreFPS.API;
@@ -78,39 +79,48 @@ If your mod moves the camera itself every frame (a follow cam, a cinematic), tel
 out of the way:
 
 ```csharp
+private static readonly CameraPolicy followPolicy = new CameraPolicy(allowDetachedRendering: false);
+
 public CameraPolicy? Resolve(CameraContext context)
 {
-    return Following ? new CameraPolicy(allowDetachedMotion: false) : null;
+    return Following ? followPolicy : null;
 }
 ```
 
-The map then renders normally through Unity and you keep full control.
+SMF hands rendering back to Unity, pauses its TPS boost, and resumes when the provider
+returns null. The player's Enabled setting stays unchanged. Use `allowDetachedMotion: false`
+instead if you only need camera control while keeping SMF's renderer active.
 
 ## Your mod changes map bounds or zoom limits
 
-Patch `CameraGeometry.GetPolicy` with a Harmony postfix and return a
-`CameraGeometryPolicy`. Bounds are in map cells.
+Register only the geometry queries your mod needs. Bounds are in map cells; return null
+when your mod does not control the current map. Create reusable policies once.
 
 ```csharp
-[HarmonyPatch(typeof(CameraGeometry), nameof(CameraGeometry.GetPolicy))]
-static class GeometryPatch
-{
-    static void Postfix(CameraContext context, ref CameraGeometryPolicy __result)
-    {
-        if (!MyMod.IsBigMap(context.Map)) return;
-        __result = new CameraGeometryPolicy(
-            movementBounds: new CameraMotionBounds(
-                x: CameraAxisBounds.Framed(0, 500, panMargin: 10, overscrollFraction: 0.1),
-                z: CameraAxisBounds.Framed(0, 500, panMargin: 10, overscrollFraction: 0.1)),
-            maximumSize: 120,
-            reservedWheelModifiers: CameraWheelModifiers.Control);
-    }
-}
+var bigMapPolicy = new CameraGeometryPolicy(
+    movementBounds: new CameraMotionBounds(
+        x: CameraAxisBounds.Framed(0, 500, panMargin: 10, overscrollFraction: 0.1),
+        z: CameraAxisBounds.Framed(0, 500, panMargin: 10, overscrollFraction: 0.1)),
+    maximumSize: 120,
+    reservedWheelModifiers: CameraWheelModifiers.Control);
+
+CameraGeometryProviders.Register("me.mymod.geometry", priority: 300,
+    policy: context => MyMod.IsBigMap(context.Map) ? bigMapPolicy : null,
+    movementExtent: context => MyMod.IsBigMap(context.Map)
+        ? new CameraMovementExtent(500, 500) : (CameraMovementExtent?)null);
 ```
 
 `reservedWheelModifiers` tells the native wheel handler to ignore scroll events while that
-modifier is held, so your Ctrl+wheel binding keeps working. `GetMovementExtent` and
-`GetCoverageBounds` can be patched the same way when the map is bigger than `Map.Size`.
+modifier is held, so your Ctrl+wheel binding keeps working. The optional `coverageBounds`
+callback controls rendered bounds. A policy's `CoverageBounds` takes precedence over that
+callback. Movement-extent queries do not evaluate policy or coverage callbacks.
+
+Each query takes the first non-null result, ordered by descending priority and then ordinal
+ID. Built-in VMF geometry has priority 200; As Above So Below has priority 100. Registration
+and `Unregister(id)` are thread safe; callbacks run on Unity main and should reuse unchanged
+policies. Callback errors include the provider ID and query. Existing Harmony patches of
+`CameraGeometry.GetPolicy`, `GetMovementExtent` and `GetCoverageBounds` still work;
+coverage queries continue through the public `GetPolicy` patch point first.
 
 ## Your mod draws things in the world with GUI code
 
@@ -130,7 +140,8 @@ static class MyLabels
 }
 ```
 
-The method must be a concrete static `void` method. Register from any thread.
+The method must be a concrete `void` method with no open generic parameters; instance methods also work.
+Registration captures its existing calls rather than invoking it. Register from any thread.
 `WorldOverlayApi.Unregister(id)` removes it at the next GUI sync.
 
 ## Errors

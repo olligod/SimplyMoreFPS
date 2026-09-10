@@ -39,12 +39,49 @@ public static partial class HybridSession
 
     private static void BeginAfter(int instanceID, int useGUILayout, Session __state)
     {
-        if (__state != null && ReferenceEquals(current, __state)) __state.BeginContext();
+        if (__state != null && ReferenceEquals(current, __state))
+        {
+            __state.BeginContext();
+            if (Event.current != null && Event.current.type == EventType.Repaint && __state.ContextDepth <= 1)
+            {
+                __state.ReplayCameraPlusEdges();
+            }
+        }
+    }
+
+    internal static bool TryCaptureCameraPlusEdge(Mesh mesh, Matrix4x4 matrix, Material material, int layer)
+    {
+        Session session = current;
+        if (session == null || !session.CaptureRouting || session.CameraEdges == null)
+        {
+            return false;
+        }
+
+        session.CheckMain();
+        try
+        {
+            return session.CameraEdges.Capture(mesh, matrix, material, layer);
+        }
+        catch (Exception error)
+        {
+            try
+            {
+                session.CameraEdges.RestoreWorldDraws();
+            }
+            catch (Exception restoreError)
+            {
+                error = new AggregateException("Camera+ edge capture and restoration both failed.", error, restoreError);
+            }
+
+            session.Fail(error);
+            return false;
+        }
     }
 
     private static Exception BeginFinally(Exception __exception, Session __state)
     {
-        if (__exception != null && __state != null) __state.Fail(__exception);
+        if (__exception != null && __state != null)
+            __state.Fail(__exception);
         return __exception;
     }
 
@@ -55,20 +92,23 @@ public static partial class HybridSession
 
     private static Exception EndFinally(Exception __exception, GuiScope __state)
     {
-        if (__state.Owner != null) __state.Owner.EndContext(__state, __exception);
+        if (__state.Owner != null)
+            __state.Owner.EndContext(__state, __exception);
         return __exception; // never swallow or replace the game's own exception
     }
 
     private static void ExceptionalEnd(Exception exception)
     {
-        if (current != null) current.ExceptionalEnd(exception);
+        if (current != null)
+            current.ExceptionalEnd(exception);
     }
 
     private static void BeforeWorld(ThingOverlays __instance, out WorldScope __state)
     {
         __state = default;
         Session session = current;
-        if (session == null || Event.current == null || Event.current.type != EventType.Repaint || !session.TargetHeld) return;
+        if (session == null || Event.current == null || Event.current.type != EventType.Repaint || !session.TargetHeld)
+            return;
 
         try
         {
@@ -82,8 +122,10 @@ public static partial class HybridSession
 
     private static Exception AfterWorld(Exception __exception, WorldScope __state)
     {
-        if (__state.Owner != null) __state.Owner.EndWorld(__state, __exception);
-        else if (__exception != null && current != null) current.Fail(__exception);
+        if (__state.Owner != null)
+            __state.Owner.EndWorld(__state, __exception);
+        else if (__exception != null && current != null)
+            current.Fail(__exception);
         return __exception;
     }
 
@@ -108,8 +150,10 @@ public static partial class HybridSession
     private static Exception AfterRegisteredWorld(MethodBase __originalMethod, Exception __exception, WorldScope __state)
     {
         Session session = __state.Owner ?? current;
-        if (__state.Owner != null) __state.Owner.EndWorld(__state, null);
-        if (__exception != null && session != null) session.Fail(session.WorldOverlayError(__originalMethod, "draw", __exception));
+        if (__state.Owner != null)
+            __state.Owner.EndWorld(__state, null);
+        if (__exception != null && session != null)
+            session.Fail(session.WorldOverlayError(__originalMethod, "draw", __exception));
         return __exception; // keep the mod's original exception, also in nested scopes
     }
 
@@ -130,6 +174,7 @@ public static partial class HybridSession
         private bool frameUsable;
         private readonly CommandBuffer dispatchCommands = new CommandBuffer { name = "SMF persistent session ordered callback" };
         private int attemptedFrame = -1;
+        internal CameraPlusEdges CameraEdges;
 
         internal int ContextDepth;
         internal int WorldDepth;
@@ -148,9 +193,11 @@ public static partial class HybridSession
         {
             get
             {
-                if (TargetHeld || worldScope.Owner != null) return false;
+                if (TargetHeld || worldScope.Owner != null)
+                    return false;
                 foreach (Generation generation in Generations.Values)
-                    if (generation.Coverage != null && !generation.Coverage.TargetsRestored) return false;
+                    if (generation.Coverage != null && !generation.Coverage.TargetsRestored)
+                        return false;
                 return true;
             }
         }
@@ -174,15 +221,30 @@ public static partial class HybridSession
 
             Compat.RegisterWorldOverlays();
             SyncWorldOverlays();
+            CameraEdges = CameraPlusEdges.Install(Patches);
+        }
+
+        internal void ReplayCameraPlusEdges()
+        {
+            try
+            {
+                CameraEdges?.Replay();
+            }
+            catch (Exception error)
+            {
+                Fail(error);
+            }
         }
 
         private void SyncWorldOverlays()
         {
             CheckMain();
-            if (ContextDepth != 0 || WorldDepth != 0) return;
+            if (ContextDepth != 0 || WorldDepth != 0)
+                return;
 
             WorldOverlayApi.Snapshot snapshot = WorldOverlayApi.Current;
-            if (snapshot.Revision == worldOverlayRevision) return;
+            if (snapshot.Revision == worldOverlayRevision)
+                return;
 
             // Only this session's prefix/finalizer is removed from the methods it patched.
             foreach (MethodBase method in registeredWorldDraws.Keys)
@@ -205,7 +267,8 @@ public static partial class HybridSession
             foreach (WorldOverlayApi.Registration entry in snapshot.Registrations)
             {
                 // The vanilla entry point already has its own dedicated patch.
-                if (entry.DrawMethod.Equals(vanilla)) continue;
+                if (entry.DrawMethod.Equals(vanilla))
+                    continue;
                 registeredWorldDraws.Add(entry.DrawMethod, entry.Id);
 
                 try
@@ -254,7 +317,8 @@ public static partial class HybridSession
 
                 Core.EnterDraw();
                 contexts[ContextDepth++] = scope;
-                if (scope.Type != EventType.Repaint) return;
+                if (scope.Type != EventType.Repaint)
+                    return;
                 ++Repaints;
 
                 bool firstTopLevel = scope.TopLevel && attemptedFrame != Time.frameCount;
@@ -264,7 +328,8 @@ public static partial class HybridSession
                     attemptedFrame = Time.frameCount;
                 }
 
-                if (!CaptureRouting || Capture == null || !Capture.Context.Equals(Context)) return;
+                if (!CaptureRouting || Capture == null || !Capture.Context.Equals(Context))
+                    return;
 
                 if (worldScope.Owner != null)
                 {
@@ -279,11 +344,14 @@ public static partial class HybridSession
                 {
                     // Only the first top-level repaint of a frame may start a capture; a later
                     // one would copy earlier native GUI into the base.
-                    if (!firstTopLevel) return;
-                    if (!BeginCapturedFrame()) return;
+                    if (!firstTopLevel)
+                        return;
+                    if (!BeginCapturedFrame())
+                        return;
                 }
 
-                if (Frame != Time.frameCount) throw new InvalidOperationException("Old held capture target reached a later GUI frame.");
+                if (Frame != Time.frameCount)
+                    throw new InvalidOperationException("Old held capture target reached a later GUI frame.");
                 scope.Redirected = true;
                 contexts[ContextDepth - 1] = scope;
                 RenderTexture.active = Capture.Hud;
@@ -327,11 +395,13 @@ public static partial class HybridSession
 
             if (Context.HasMap != 0)
             {
-                if (!Scene.TryReadMapPose(bundle.Key.SourceFrame, out bundle.Pose)) return false;
+                if (!Scene.TryReadMapPose(bundle.Key.SourceFrame, out bundle.Pose))
+                    return false;
                 ValidatePose(bundle.Pose, bundle.Key.SourceFrame);
                 bundle.Flags |= FrameFlags.HasMap;
                 // Coverage only attaches once it has a complete wide source; never publish an empty descriptor.
-                if (Capture.Coverage != null && !Capture.Coverage.Attach(ref bundle)) return false;
+                if (Capture.Coverage != null && !Capture.Coverage.Attach(ref bundle))
+                    return false;
             }
 
             if (!Accepted(Native.QueuePreGui(ref bundle, out NativeDispatch preGui), "pre-GUI base copy"))
@@ -379,7 +449,8 @@ public static partial class HybridSession
                 return;
             }
 
-            if (ContextDepth == 0) return; // an exceptional boundary already handled this
+            if (ContextDepth == 0)
+                return; // an exceptional boundary already handled this
 
             try
             {
@@ -389,7 +460,8 @@ public static partial class HybridSession
                 contexts[--ContextDepth] = default;
                 Core.LeaveDraw();
                 // Windows may finish drawing after EndGUI, so the HUD target stays bound until EOF.
-                if (scope.Redirected && TargetHeld) RenderTexture.active = scope.TopLevel ? Capture.Hud : scope.Previous;
+                if (scope.Redirected && TargetHeld)
+                    RenderTexture.active = scope.TopLevel ? Capture.Hud : scope.Previous;
             }
             catch (Exception nested)
             {
@@ -400,7 +472,8 @@ public static partial class HybridSession
         internal void ExceptionalEnd(Exception error)
         {
             CheckMain();
-            if (ContextDepth == 0) return;
+            if (ContextDepth == 0)
+                return;
 
             GuiScope scope = contexts[ContextDepth - 1];
             if (scope.Type == EventType.Repaint)
@@ -437,7 +510,8 @@ public static partial class HybridSession
             if (RenderTexture.active != Capture.Hud)
                 throw new InvalidOperationException("World GUI callback did not enter from the held HUD target.");
 
-            if (!Scene.TryReadMapPose(frameBundle.Key.SourceFrame, out CameraPose pose) || !SamePose(frameBundle.Pose, pose)) frameUsable = false;
+            if (!Scene.TryReadMapPose(frameBundle.Key.SourceFrame, out CameraPose pose) || !SamePose(frameBundle.Pose, pose))
+                frameUsable = false;
 
             var scope = new WorldScope { Owner = this, Previous = RenderTexture.active, Token = checked(++worldToken) };
             worldScope = scope;
@@ -451,7 +525,8 @@ public static partial class HybridSession
 
         internal void EndWorld(WorldScope scope, Exception error)
         {
-            if (worldScope.Owner == null) return; // failure cleanup already released this scope
+            if (worldScope.Owner == null)
+                return; // failure cleanup already released this scope
 
             if (!ReferenceEquals(worldScope.Owner, scope.Owner) || worldScope.Token != scope.Token)
             {
@@ -460,13 +535,16 @@ public static partial class HybridSession
             }
 
             ++frameWorldReturns;
-            if (!RestoreWorld()) return;
-            if (error != null) Fail(error);
+            if (!RestoreWorld())
+                return;
+            if (error != null)
+                Fail(error);
         }
 
         private bool RestoreWorld()
         {
-            if (worldScope.Owner == null) return true;
+            if (worldScope.Owner == null)
+                return true;
             try
             {
                 RenderTexture.active = worldScope.Previous;
@@ -485,7 +563,8 @@ public static partial class HybridSession
         internal bool RestoreTargets()
         {
             bool restoredWorld = RestoreWorld();
-            if (!TargetHeld) return restoredWorld;
+            if (!TargetHeld)
+                return restoredWorld;
 
             try
             {
@@ -520,13 +599,21 @@ public static partial class HybridSession
             try
             {
                 Capture?.Coverage?.FinishFrame();
-                if (Core.State == Phase.Off || Core.State == Phase.Exited) return;
+                bool captured = TargetHeld && Frame == Time.frameCount;
+                // A frame without IMGUI still needs its deferred edge indicators on the original target.
+                if (CameraEdges != null && CameraEdges.Pending && RestoreTargets())
+                {
+                    ReplayCameraPlusEdges();
+                }
+
+                if (Core.State == Phase.Off || Core.State == Phase.Exited)
+                    return;
 
                 if (ContextDepth != 0 || WorldDepth != 0)
                     throw new InvalidOperationException("Incomplete GUI cannot become a completed frame bundle.");
 
-                bool captured = TargetHeld && Frame == Time.frameCount;
-                if (!RestoreTargets()) return;
+                if (!RestoreTargets())
+                    return;
                 DrainCancellations();
                 if (pendingCancellations.Count != 0)
                 {
@@ -540,8 +627,10 @@ public static partial class HybridSession
                 bool frameQueued = false;
                 if (captured)
                 {
-                    if (frameWorldCalls != frameWorldReturns) frameUsable = false;
-                    if (!Capture.Context.Equals(Scene.ReadContext())) frameUsable = false;
+                    if (frameWorldCalls != frameWorldReturns)
+                        frameUsable = false;
+                    if (!Capture.Context.Equals(Scene.ReadContext()))
+                        frameUsable = false;
                     if (Context.HasMap != 0 && (!Scene.TryReadMapPose(frameBundle.Key.SourceFrame, out CameraPose finalPose) ||
                         !SamePose(frameBundle.Pose, finalPose)))
                         frameUsable = false;
@@ -563,8 +652,10 @@ public static partial class HybridSession
 
                     if (frameUsable)
                     {
-                        if (Accepted(Native.QueueFrame(ref frameBundle, out frame), "atomic base/world/HUD frame")) frameQueued = true;
-                        else ++BusyFrames;
+                        if (Accepted(Native.QueueFrame(ref frameBundle, out frame), "atomic base/world/HUD frame"))
+                            frameQueued = true;
+                        else
+                            ++BusyFrames;
                     }
                 }
 
@@ -606,8 +697,10 @@ public static partial class HybridSession
                 }
                 finally
                 {
-                    if (frameQueued) pendingCancellations.Add(frame);
-                    if (markerQueued) pendingCancellations.Add(markerDispatch);
+                    if (frameQueued)
+                        pendingCancellations.Add(frame);
+                    if (markerQueued)
+                        pendingCancellations.Add(markerDispatch);
                     DrainCancellations();
                 }
 
@@ -650,7 +743,8 @@ public static partial class HybridSession
         private void IssueNativeEvent(int eventId, IntPtr ticket, bool bindOriginal = false)
         {
             dispatchCommands.Clear();
-            if (bindOriginal) dispatchCommands.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
+            if (bindOriginal)
+                dispatchCommands.SetRenderTarget(BuiltinRenderTextureType.CameraTarget);
             dispatchCommands.IssuePluginEventAndData(Native.RenderEvent, eventId, ticket);
             Graphics.ExecuteCommandBuffer(dispatchCommands);
         }
@@ -658,7 +752,8 @@ public static partial class HybridSession
         private void DrainCancellations()
         {
             // Skip the delegate allocation on the healthy path.
-            if (pendingCancellations.Count != 0) pendingCancellations.Retry(Native.Cancel);
+            if (pendingCancellations.Count != 0)
+                pendingCancellations.Retry(Native.Cancel);
         }
 
         private void CompositeNative(RenderTexture source)
@@ -698,7 +793,8 @@ public static partial class HybridSession
             byte* b = (byte*)&second;
 
             for (int i = 0; i < sizeof(CameraPose); ++i)
-                if (a[i] != b[i]) return false;
+                if (a[i] != b[i])
+                    return false;
             return true;
         }
     }

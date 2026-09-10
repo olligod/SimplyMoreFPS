@@ -58,6 +58,7 @@ SMF_MAC_API int32_t smf_mac_original_base_enable(uint64_t session);
 SMF_MAC_API int32_t smf_mac_source_target_enable(uint64_t session);
 SMF_MAC_API int32_t smf_mac_source_target(const mac_source_target*, uint32_t);
 SMF_MAC_API int32_t smf_mac_native_target(const mac_source_target*, uint32_t);
+// Discovery: 0 ready, 1 missing, 2 ambiguous, 3 suspended; negative results are failures.
 SMF_MAC_API int32_t smf_mac_find_original_window(uint64_t* original_window);
 SMF_MAC_API int32_t smf_mac_capabilities(mac_capabilities*, uint32_t);
 SMF_MAC_API int32_t smf_mac_observer_diagnostic(mac_observer_diagnostic*, uint32_t);

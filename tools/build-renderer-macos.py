@@ -6,17 +6,19 @@ installed and no game is started. The tests run on the host architecture only an
 load the renderer. --plan only reports readiness.
 """
 import argparse
-import hashlib
-import importlib.util
 import json
 import os
 import platform
 import plistlib
 import shutil
-import subprocess
 import sys
 import time
 from pathlib import Path
+
+# CI also imports these scripts by path, without tools/ on its module search path.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from native_build import BuildLog, RECEIPT_NAME, load_package, snapshot_sources, write_receipt
+from native_build import file_digest as digest, file_record as record
 
 ROOT = Path(__file__).resolve().parents[1]
 RENDERER_DIR = ROOT / 'src/Smf.Renderer/mac'
@@ -83,28 +85,10 @@ INFO_PLIST = {
     'CFBundleVersion': '1',
     'LSMinimumSystemVersion': '11.0',
 }
-RECEIPT_NAME = 'build-receipt.json'
-
-
-def digest(path):
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
-def record(path, root):
-    return {'path': path.relative_to(root).as_posix(), 'sha256': digest(path), 'bytes': path.stat().st_size}
 
 
 def load_package_module():
-    """tools/package-release.py owns the source inventory and the final validation."""
-    spec = importlib.util.spec_from_file_location('smf_mac_package', ROOT / 'tools/package-release.py')
-    module = importlib.util.module_from_spec(spec)
-    previous = sys.dont_write_bytecode
-    try:
-        sys.dont_write_bytecode = True
-        spec.loader.exec_module(module)
-    finally:
-        sys.dont_write_bytecode = previous
-    return module
+    return load_package(ROOT, 'smf_mac_package')
 
 
 def required_files(with_tests):
@@ -121,18 +105,14 @@ def relative(path):
     return path.relative_to(ROOT).as_posix()
 
 
-def write_receipt(out, receipt):
-    (out / RECEIPT_NAME).write_text(json.dumps(receipt, indent=2) + '\n')
-
-
 class Build:
     def __init__(self, out, snapshot, tool, receipt):
         self.out = out
-        self.logs = out / 'logs'
         self.snapshot = snapshot
         self.tool = tool
         self.receipt = receipt
         self.env = dict(os.environ, DOTNET_PROCESSOR_COUNT='2', MSBUILDDISABLENODEREUSE='1')
+        self.log_runner = BuildLog(out, self.env, receipt, encoding=None)
         self.renderer = snapshot / 'src/Smf.Renderer/mac'
         self.camera = snapshot / 'src/Smf.Camera'
         self.native = out / 'Native/osx-universal'
@@ -142,27 +122,7 @@ class Build:
         self.compile = []
 
     def run(self, label, command):
-        """Run one step with its output captured to a log; the receipt keeps the exit code."""
-        command = [str(part) for part in command]
-        log = self.logs / (label + '.log')
-        start = time.time()
-
-        with log.open('w') as stream:
-            result = subprocess.run(command, cwd=self.out, env=self.env, stdout=stream, stderr=subprocess.STDOUT)
-
-        self.receipt['steps'].append({
-            'label': label,
-            'command': command,
-            'exitCode': result.returncode,
-            'elapsedSeconds': time.time() - start,
-            'log': log.relative_to(self.out).as_posix(),
-            'logSha256': digest(log),
-        })
-
-        print(label + ': ' + str(result.returncode), flush=True)
-        if result.returncode:
-            raise RuntimeError(label + ' failed; see ' + str(log))
-        return log.read_text(errors='replace')
+        return self.log_runner.run(label, command)
 
     def find_compiler(self):
         compiler = Path(self.run('find-clang', [self.tool['xcrun'], '--find', 'clang++']).strip())
@@ -295,17 +255,6 @@ class Build:
         (self.native / 'DOTNET-THIRD-PARTY-NOTICES.txt').write_bytes(notices)
 
 
-def snapshot_sources(sources, manifest, snapshot):
-    for source in sources:
-        target = snapshot / source.relative_to(ROOT)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-
-    copied = [record(snapshot / source.relative_to(ROOT), snapshot) for source in sources]
-    if copied != manifest:
-        raise RuntimeError('Sources changed while snapshotting; discard this failed build and retry fresh.')
-
-
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, required=True, help='New build directory; must not exist yet')
@@ -384,7 +333,7 @@ def main():
         'dotnetProcessorCount': 2,
     }
     try:
-        snapshot_sources(sources, manifest, snapshot)
+        snapshot_sources(ROOT, sources, manifest, snapshot)
 
         receipt['tools'] = {}
         for name, path in tool.items():

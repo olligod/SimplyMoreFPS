@@ -48,7 +48,15 @@ other mods belong in separate compatibility runs.
 Measure TPS under saturated load, with TPS boost off. Profiler percentages cover the
 functions being timed; they are not the mod's total TPS cost.
 
-The camera must keep moving while the game thread is blocked. Only Unity's main thread may
-touch Unity or RimWorld state. Native workers communicate through the camera kernel's C ABI;
-never pass managed references across that boundary. Keep the opt-in development tools out
-of release archives.
+## Architecture
+
+The camera must keep moving while the game thread is blocked. Keep these boundaries intact:
+
+- Camera smoothing must not change tick scheduling, time accumulation or simulation speed.
+- Only Unity's main thread may touch Unity or RimWorld state. The native worker never calls Unity.
+- Pass no managed references across the camera kernel's C ABI in `src/Smf.Camera/camera_kernel.h`.
+  Keep its struct-size assertions and the public modder API's existing type and member names.
+- Never unload a native library while the game is running.
+- Build each platform's native renderer separately: D3D11 on Windows, OpenGL on Linux and
+  Metal on macOS. A managed build alone does not qualify a platform.
+- Keep the opt-in development tools in `src/Smf.Dev` out of release archives.

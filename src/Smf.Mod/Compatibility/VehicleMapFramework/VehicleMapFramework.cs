@@ -1,6 +1,7 @@
 using System;
 using System.Reflection;
 using System.Reflection.Emit;
+using SimplyMoreFPS.API;
 using Verse;
 
 namespace SimplyMoreFPS.Compatibility;
@@ -14,15 +15,29 @@ internal static class VehicleMapFramework
     private static Func<Map, bool>? isVehicleMap;
     private static Func<object, object>? readSettings;
     private static Func<object, bool>? readDrawPlanet;
+    private static readonly CameraGeometryPolicy PlanetPolicy = new CameraGeometryPolicy();
+
+    internal static void RegisterGeometry()
+    {
+        CameraGeometryProviders.Register(PackageId, priority: 200,
+            policy: context => HasVehiclePlanet(context.Map) ? PlanetPolicy : null,
+            movementExtent: context => HasVehiclePlanet(context.Map)
+                ? new CameraMovementExtent(200, 200) : (CameraMovementExtent?)null,
+            coverageBounds: context => HasVehiclePlanet(context.Map)
+                ? new CameraCoverageBounds(-4, 204, -4, 204) : (CameraCoverageBounds?)null);
+    }
 
     internal static bool HasVehiclePlanet(Map map)
     {
-        if (!UnityData.IsInMainThread) throw new InvalidOperationException("Camera geometry requires Unity main.");
+        if (!UnityData.IsInMainThread)
+            throw new InvalidOperationException("Camera geometry requires Unity main.");
 
         try
         {
-            if (!bound) Bind();
-            if (isVehicleMap == null) return false;
+            if (!bound)
+                Bind();
+            if (isVehicleMap == null)
+                return false;
 
             object settings = readSettings!(null!) ?? throw new InvalidOperationException("VMF settings are not initialized.");
             return readDrawPlanet!(settings) && isVehicleMap(map);

@@ -1,5 +1,6 @@
 #pragma once
 #include "linux_session_packets.h"
+#include "../common/projection_math.h"
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -182,13 +183,12 @@ namespace linux_session {
     inline bool inverse(const affine& a, affine& b) {
         if (!valid(a)) return false;
         double t = a.a * a.e - a.b * a.d;
-        b = {a.e / t, -a.b / t, (a.b * a.f - a.e * a.c) / t, -a.d / t, a.a / t, (a.d * a.c - a.a * a.f) / t};
+        b = smf_projection::inverse(a, t);
         return valid(b);
     }
 
     inline affine multiply(const affine& a, const affine& b) {
-        return {a.a * b.a + a.b * b.d, a.a * b.b + a.b * b.e, a.a * b.c + a.b * b.f + a.c,
-                a.d * b.a + a.e * b.d, a.d * b.b + a.e * b.e, a.d * b.c + a.e * b.f + a.f};
+        return smf_projection::multiply(a, b);
     }
 
     inline bool valid_cache(const frame_packet& frame, const cache_packet& previous) {
@@ -221,30 +221,7 @@ namespace linux_session {
             !std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) || p.pixel_x || p.pixel_y ||
             p.pixel_width != width || p.pixel_height != height || !std::isfinite(p.orthographic_size) || p.orthographic_size <= 0) return false;
 
-        for (int i = 0; i < 16; i++) {
-            if (!std::isfinite(p.world_to_camera[i]) || !std::isfinite(p.projection[i])) return false;
-        }
-        if (std::abs(p.projection[3]) > 1e-7 || std::abs(p.projection[7]) > 1e-7 ||
-            std::abs(p.projection[11]) > 1e-7 || std::abs(p.projection[15] - 1) > 1e-7) return false;
-
-        double m[16]{};
-        for (int c = 0; c < 4; c++) {
-            for (int r = 0; r < 4; r++) {
-                for (int k = 0; k < 4; k++) m[c * 4 + r] += double(p.projection[k * 4 + r]) * p.world_to_camera[c * 4 + k];
-            }
-        }
-        if (std::abs(m[3]) > 1e-7 || std::abs(m[11]) > 1e-7 || std::abs(m[15]) < 1e-10) return false;
-
-        // The float 90 degree view rotation leaves FLT_EPSILON residuals, so test
-        // the angle rather than a projected magnitude; that holds at every zoom.
-        constexpr double angular_roundoff = 4 * std::numeric_limits<float>::epsilon();
-        if (std::abs(m[4]) > angular_roundoff * std::hypot(m[0], m[8]) ||
-            std::abs(m[5]) > angular_roundoff * std::hypot(m[1], m[9])) return false;
-
-        // Convert before negating: height is unsigned and unary minus would wrap.
-        double sx = double(width) * .5 / m[15];
-        double sy = -double(height) * .5 / m[15];
-        out = {m[0] * sx, m[8] * sx, m[12] * sx + width * .5, m[1] * sy, m[9] * sy, m[13] * sy + height * .5};
+        if (!smf_projection::ground_projection(p.projection, p.world_to_camera, width, height, out)) return false;
         return valid(out);
     }
 
@@ -269,11 +246,8 @@ namespace linux_session {
                 return true;
             }
 
-            double k = projection_half_height / half_height;
-            double cx = width * .5;
-            double cy = height * .5;
-            out = {nominal.a * k, nominal.b * k, cx + k * (nominal.c - cx + nominal.a * (x - xx) + nominal.b * (z - zz)),
-                   nominal.d * k, nominal.e * k, cy + k * (nominal.f - cy + nominal.d * (x - xx) + nominal.e * (z - zz))};
+            out = smf_projection::root_projection(nominal, projection_half_height / half_height,
+                width, height, x - xx, z - zz);
             return valid(out);
         }
 

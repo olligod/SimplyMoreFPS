@@ -4,7 +4,7 @@
     <AssemblyName>Smf.Mod</AssemblyName>
     <RootNamespace>SimplyMoreFPS</RootNamespace>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Version>0.3.10</Version>
+    <Version>0.3.11</Version>
   </PropertyGroup>
   <Import Project="../../RimWorldRefs.props" />
   <ItemGroup>

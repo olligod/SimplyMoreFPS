@@ -1,8 +1,8 @@
 #pragma once
 #include "session_packets.h"
+#include "../common/projection_math.h"
 #include <cmath>
 #include <cstring>
-#include <limits>
 
 // Pure policies with no Metal, AppKit or Unity dependency; the tests run them without a display.
 namespace mac {
@@ -31,14 +31,12 @@ namespace mac {
         if (!valid_affine(m)) return false;
 
         double det = m.a * m.e - m.b * m.d;
-        out = {m.e / det, -m.b / det, (m.b * m.f - m.e * m.c) / det,
-            -m.d / det, m.a / det, (m.d * m.c - m.a * m.f) / det};
+        out = smf_projection::inverse(m, det);
         return valid_affine(out);
     }
 
     inline affine multiply_affine(const affine& l, const affine& r) {
-        return {l.a * r.a + l.b * r.d, l.a * r.b + l.b * r.e, l.a * r.c + l.b * r.f + l.c,
-            l.d * r.a + l.e * r.d, l.d * r.b + l.e * r.e, l.d * r.c + l.e * r.f + l.f};
+        return smf_projection::multiply(l, r);
     }
 
     inline bool valid_cache(const session_frame& frame, const session_cache& previous) {
@@ -72,30 +70,7 @@ namespace mac {
             p.pixel_width != width || p.pixel_height != height ||
             !std::isfinite(p.orthographic_size) || p.orthographic_size <= 0) return false;
 
-        for (int i = 0; i < 16; i++) {
-            if (!std::isfinite(p.world_to_camera[i]) || !std::isfinite(p.projection[i])) return false;
-        }
-
-        if (std::abs(p.projection[3]) > 1e-7 || std::abs(p.projection[7]) > 1e-7 ||
-            std::abs(p.projection[11]) > 1e-7 || std::abs(p.projection[15] - 1) > 1e-7) return false;
-
-        double m[16]{};
-        for (int c = 0; c < 4; c++) {
-            for (int r = 0; r < 4; r++) {
-                for (int k = 0; k < 4; k++) m[c * 4 + r] += double(p.projection[k * 4 + r]) * p.world_to_camera[c * 4 + k];
-            }
-        }
-
-        if (std::abs(m[3]) > 1e-7 || std::abs(m[11]) > 1e-7 || std::abs(m[15]) < 1e-10) return false;
-        // A float 90-degree view rotation leaves FLT_EPSILON residuals. Test the
-        // angle, not the projected magnitude, so the same camera passes at every zoom.
-        constexpr double angular_roundoff = 4 * std::numeric_limits<float>::epsilon();
-        if (std::abs(m[4]) > angular_roundoff * std::hypot(m[0], m[8]) ||
-            std::abs(m[5]) > angular_roundoff * std::hypot(m[1], m[9])) return false;
-
-        double sx = width * .5 / m[15];
-        double sy = -double(height) * .5 / m[15];
-        out = {m[0] * sx, m[8] * sx, m[12] * sx + width * .5, m[1] * sy, m[9] * sy, m[13] * sy + height * .5};
+        if (!smf_projection::ground_projection(p.projection, p.world_to_camera, width, height, out)) return false;
         return valid_affine(out);
     }
 
@@ -115,11 +90,8 @@ namespace mac {
                 return true;
             }
 
-            double k = projection_half_height / half_height;
-            double cx = width * .5;
-            double cy = height * .5;
-            out = {nominal.a * k, nominal.b * k, cx + k * (nominal.c - cx + nominal.a * (x - root_x) + nominal.b * (z - root_z)),
-                nominal.d * k, nominal.e * k, cy + k * (nominal.f - cy + nominal.d * (x - root_x) + nominal.e * (z - root_z))};
+            out = smf_projection::root_projection(nominal, projection_half_height / half_height,
+                width, height, x - root_x, z - root_z);
             return valid_affine(out);
         }
 

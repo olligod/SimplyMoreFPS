@@ -153,7 +153,10 @@ def source_files_for_native(runtime):
     if runtime not in RUNTIMES:
         raise ValueError('Unsupported native runtime: ' + runtime)
 
-    files = [ROOT / 'Directory.Build.props', ROOT / 'tools' / BUILD_SCRIPTS[runtime]]
+    files = [ROOT / 'Directory.Build.props', ROOT / 'tools' / BUILD_SCRIPTS[runtime],
+             ROOT / 'tools/native_build.py', ROOT / 'tools/package-release.py']
+    if runtime == 'osx-universal':
+        files.append(ROOT / 'tools/macos-signature-check.py')
     files += sorted((ROOT / 'src/Smf.Shared').glob('*.cs'))
     if (ROOT / 'global.json').is_file():
         files.append(ROOT / 'global.json')

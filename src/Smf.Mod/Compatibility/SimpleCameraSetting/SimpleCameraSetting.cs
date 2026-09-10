@@ -11,9 +11,10 @@ internal static class SimpleCameraSetting
 
     internal static void Register()
     {
-        if (!ModsConfig.IsActive(PackageId)) return;
-        try
+        if (!ModsConfig.IsActive(PackageId))
+            return;
 
+        try
         {
             CameraProviders.Register(new Provider(Compat.RequireType("SimpleCameraSetting.SimpleCameraModSetting")));
         }
@@ -92,7 +93,8 @@ internal static class SimpleCameraSetting
 
         public CameraPolicy? Resolve(CameraContext context)
         {
-            if (context.Driver.config.GetType() != typeof(CameraMapConfig_Normal)) return null;
+            if (context.Driver.config.GetType() != typeof(CameraMapConfig_Normal))
+                return null;
             object instance = settings(null!) ?? throw new InvalidOperationException("SimpleCameraSetting settings are not initialized.");
 
             bool changed = policy == null;
@@ -102,7 +104,8 @@ internal static class SimpleCameraSetting
                 changed |= values[i] != previous[i];
             }
 
-            if (!changed) return policy;
+            if (!changed)
+                return policy;
 
             var move = new CameraCurvePoint[9];
             var zoom = fields.Length == 18 ? new CameraCurvePoint[9] : null;
