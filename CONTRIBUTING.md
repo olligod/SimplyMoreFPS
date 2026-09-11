@@ -40,6 +40,11 @@ Use `linux-x64` or `osx-universal` for those platforms, and a fresh output folde
 - Use a merge commit for `dev -> main`, then fast-forward `dev` to `main`.
 - Keep both branches. Do not force-push them.
 
+Use the version as the release title, short bullets for changes, and a final restart
+reminder. Keep the wording consistent on GitHub and Workshop. Use Markdown on GitHub;
+on Workshop, use a bold version label and plain hyphen bullets so the text stays
+inside the change-note box.
+
 Run checks relevant to the change. `dotnet run --project tests/Smf.Tests` runs the managed tests.
 Native build scripts accept `--tests`. CI builds Windows, Linux, Intel Mac and ARM Mac and
 checks the release ZIP contents. Game tests use a fresh Core colony with Harmony and SMF;
