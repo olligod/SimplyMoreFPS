@@ -37,6 +37,12 @@ public sealed class RimWorldSceneOwner : IMainSceneOwner, IMainSceneLifetime
     private bool pendingMap;
     private bool completedMap;
     private bool cameraEnabled;
+
+    // A faulted renderer must not keep an unloaded colony alive.
+    private readonly System.WeakReference<Game> observedGame = new System.WeakReference<Game>(null);
+    private readonly System.WeakReference<Map> observedMap = new System.WeakReference<Map>(null);
+    private ulong sceneEpoch;
+
     private ulong sourceSequence;
     private ulong sourceEpoch = 1;
     private int stampedMap = -1;
@@ -263,6 +269,18 @@ public sealed class RimWorldSceneOwner : IMainSceneOwner, IMainSceneLifetime
         var root = Find.Root;
         var map = Find.CurrentMap;
         var camera = Find.Camera;
+        var game = Current.Game;
+
+        observedGame.TryGetTarget(out Game previousGame);
+        observedMap.TryGetTarget(out Map previousMap);
+
+        // Multiplayer can replace game objects while reusing the saved map ID and Unity cameras.
+        if (!ReferenceEquals(previousGame, game) || !ReferenceEquals(previousMap, map))
+        {
+            sceneEpoch = checked(sceneEpoch + 1);
+            observedGame.SetTarget(game);
+            observedMap.SetTarget(map);
+        }
 
         // This only decides whether a colony-camera pose exists. Title, planet and custom
         // backgrounds still use the pre-GUI base copy and the HUD in the same session.
@@ -270,6 +288,7 @@ public sealed class RimWorldSceneOwner : IMainSceneOwner, IMainSceneLifetime
 
         return new SceneContext
         {
+            SceneEpoch = sceneEpoch,
             SceneHandle = SceneManager.GetActiveScene().handle,
             RootId = root == null ? 0 : root.GetInstanceID(),
             MapId = mapPose ? map.uniqueID : -1,

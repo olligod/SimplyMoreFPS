@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.12 - 2026-09-11
+
+- Fix stale map rendering when hosting with Multiplayer.
+- Clarify load order and compatibility notes.
+
 ## 0.3.11 - 2026-09-10
 
 - Wait for a usable game window during renderer startup.

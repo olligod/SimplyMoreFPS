@@ -54,7 +54,7 @@ SMF and TPS boost pause during Perspective Shift pawn control or Follow Me. Both
 - SMF and Butter++. Use SMF instead.
 - Camera+ and SimpleCameraSetting/Perspective Shift. Those mods conflict with each other.
 
-Version 0.3.11. Last updated: 10 September 2026.
+Version 0.3.12. Last updated: 11 September 2026.
 
 ## More from me
 
