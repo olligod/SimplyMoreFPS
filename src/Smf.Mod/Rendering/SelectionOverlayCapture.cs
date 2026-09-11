@@ -1,6 +1,7 @@
 #nullable disable
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 using HarmonyLib;
 using RimWorld;
 using UnityEngine;
@@ -41,7 +42,10 @@ public static partial class HybridSession
     private static void AfterSelectionInput()
     {
         Session session = current;
-        if (session == null) return;
+
+        // Starting dialogs can open on the loading thread; Update publishes their state safely.
+        if (session == null || Thread.CurrentThread.ManagedThreadId != session.MainThread)
+            return;
 
         try
         {

@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using HarmonyLib;
+using SimplyMoreFPS.Compatibility;
 using Verse;
 
 namespace SimplyMoreFPS.Performance;
@@ -65,7 +66,7 @@ internal static class GameFrameBudget
             var transpiler = new HarmonyMethod(typeof(GameFrameBudget), nameof(Transpiler))
             {
                 priority = Priority.Last,
-                after = new[] { "matvey24.FPSStabilizer", "blue.adaptivetps" },
+                after = GameFrameBudgetCompatibility.PatchOwners,
             };
 
             harmony.Patch(target, transpiler: transpiler);
@@ -99,8 +100,7 @@ internal static class GameFrameBudget
         {
             matched = false;
             Report("expected exactly one Stopwatch.ElapsedMilliseconds / conv.r4 / "
-                + "[45.454544f, FPSStabilizer.HarmonyPatcher.target_frametime, or "
-                + "AdaptiveTPS.TickManagerUpdate_Patch.GetMaxFrameTimeConditional()] / bgt budget comparison; found "
+                + "[45.454544f, " + GameFrameBudgetCompatibility.BudgetOperands + "] / bgt budget comparison; found "
                 + matches.Count, __originalMethod);
             return codes;
         }
@@ -117,19 +117,7 @@ internal static class GameFrameBudget
         if (instruction.opcode == OpCodes.Ldc_R4)
             return instruction.operand is float value && value == 45.454544f;
 
-        if (instruction.opcode == OpCodes.Ldsfld && instruction.operand is FieldInfo field)
-        {
-            return field.IsStatic && field.FieldType == typeof(float) && field.Name == "target_frametime"
-                && field.DeclaringType?.FullName == "FPSStabilizer.HarmonyPatcher";
-        }
-
-        if (instruction.opcode == OpCodes.Call && instruction.operand is MethodInfo method)
-        {
-            return method.IsStatic && !method.ContainsGenericParameters && method.ReturnType == typeof(float) && method.GetParameters().Length == 0
-                && method.Name == "GetMaxFrameTimeConditional" && method.DeclaringType?.FullName == "AdaptiveTPS.TickManagerUpdate_Patch";
-        }
-
-        return false;
+        return GameFrameBudgetCompatibility.IsBudgetLoad(instruction);
     }
 
     private static void Report(string detail, MethodBase target)

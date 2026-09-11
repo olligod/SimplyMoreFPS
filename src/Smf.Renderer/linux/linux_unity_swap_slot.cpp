@@ -91,19 +91,6 @@ namespace linux_session {
             return 0;
         }
 
-        // True when value is libGL's own export of name rather than a wrapper.
-        bool exact_export(void* value, const char* name) {
-            if (!value) return false;
-            void* gl = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
-            if (!gl) return false; // the handle is kept on purpose
-
-            void* exported = dlsym(gl, name);
-            void* proc = reinterpret_cast<void*>(glXGetProcAddressARB(reinterpret_cast<const GLubyte*>(name)));
-            Dl_info info{};
-
-            return (value == exported || value == proc) && dladdr(value, &info) && info.dli_sname && !strcmp(info.dli_sname, name);
-        }
-
         int follow_chain(const address_map& m, uintptr_t base, Display* d, GLXDrawable x, GLXContext c, unity_swap_slot& out) {
             uintptr_t device = 0;
             uintptr_t table = 0;
@@ -131,6 +118,18 @@ namespace linux_session {
 
     }
 
+    bool is_glx_entrypoint(void* value, const char* name) {
+        if (!value) return false;
+        void* gl = dlopen("libGL.so.1", RTLD_NOW | RTLD_NOLOAD);
+        if (!gl) return false; // the handle is kept on purpose
+
+        void* exported = dlsym(gl, name);
+        void* proc = reinterpret_cast<void*>(glXGetProcAddressARB(reinterpret_cast<const GLubyte*>(name)));
+
+        // GLVND extension dispatch functions may have no symbol name; compare the actual entrypoints.
+        return value == exported || value == proc;
+    }
+
     int find_unity_swap_slot(Display* d, GLXDrawable x, GLXContext c, unity_swap_slot& out) {
         module_info module;
         dl_iterate_phdr(find_module, &module);
@@ -151,7 +150,7 @@ namespace linux_session {
         for (unsigned i = 0; i < 3; i++) {
             uintptr_t value = 0;
             if (!maps.read_pointer(out.table + offsets[i], value)) return -15;
-            if (!exact_export(reinterpret_cast<void*>(value), names[i])) return -15;
+            if (!is_glx_entrypoint(reinterpret_cast<void*>(value), names[i])) return -15;
         }
 
         return 0;
