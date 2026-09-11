@@ -28,7 +28,7 @@ Works with most mods. Mods that replace camera controls or rendering may need a 
 
 Replaces Butter++. With **TPS boost**, you usually won't need FPS Stabilizer or Adaptive TPS either.
 
-Checked on Windows, 9-10 September 2026:
+Checked on Windows, 9-11 September 2026:
 
 - Camera+
 - SimpleCameraSetting
@@ -43,7 +43,12 @@ Checked on Windows, 9-10 September 2026:
 - Follow Me 1.6
 - FPS Stabilizer
 - Adaptive TPS
-- AntiAliasing: FXAA, SMAA and sharpening. SSAA is unsupported.
+- AntiAliasing: FXAA, SMAA and sharpening. SSAA is unsupported, falls back to normal rendering.
+- Nivarian Race
+
+### Camera effects
+
+If SMF detects an unsupported camera effect, it pauses itself and TPS boost and restores normal rendering. Both resume automatically when the effect is disabled.
 
 ### Pawn following
 
@@ -54,7 +59,7 @@ SMF and TPS boost pause during Perspective Shift pawn control or Follow Me. Both
 - SMF and Butter++. Use SMF instead.
 - Camera+ and SimpleCameraSetting/Perspective Shift. Those mods conflict with each other.
 
-Version 0.3.12. Last updated: 11 September 2026.
+Version 0.3.13. Last updated: 11 September 2026.
 
 ## More from me
 

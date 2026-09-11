@@ -138,8 +138,7 @@ int main() {
         assert(display(model, final, next, 3, 101));
     }
 
-    // Distinct textures consume bounded records; duplicates at capacity are
-    // still accepted, while the seventeenth distinct texture fails closed.
+    // More intermediate textures preserve all writes and remain valid.
     {
         present_model model(7);
         auto b = model.register_buffer(1, true, 0);
@@ -152,7 +151,13 @@ int main() {
         }
 
         assert(model.buffer(b)->count == 16 && model.counters.source_writes == 1616);
-        assert(!model.write(b, 17) && model.fault == fault_kind::pool);
+        assert(model.write(b, 17) && model.fault == fault_kind::none);
+        assert(model.buffer(b)->count == 17);
+        assert(model.eof(b, 50, make_marker()));
+        auto d = copy(model, b);
+        queue(model, b);
+        model.complete(b, 1, true);
+        assert(display(model, b, d) && model.fault == fault_kind::none);
     }
 
     {
@@ -164,7 +169,17 @@ int main() {
         }
 
         assert(model.buffer(b)->count == 16);
-        assert(!model.write(b, 50) && model.fault == fault_kind::pool);
+        assert(model.write(b, 50) && model.fault == fault_kind::none);
+        assert(model.buffer(b)->count == 17);
+
+        // Growth must preserve the overwrite before a later EOF restores validity.
+        auto old = copy(model, b);
+        assert(model.eof(b, 50, make_marker(108)));
+        auto newer = copy(model, b, 4, 52);
+        queue(model, b);
+        model.complete(b, 1, true);
+        assert(!display(model, b, old));
+        assert(display(model, b, newer, 4, 108) && model.fault == fault_kind::none);
     }
 
     // An overwrite from another buffer in between still disqualifies under floods.

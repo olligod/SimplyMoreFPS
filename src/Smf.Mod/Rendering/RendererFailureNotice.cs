@@ -7,11 +7,25 @@ namespace SimplyMoreFPS.Rendering;
 internal static class RendererFailureNotice
 {
     private static string? pending;
+    private static string? explanation;
     private static Dialog_MessageBox? visible;
 
     internal static void Record(string message)
     {
-        pending ??= message;
+        if (pending == null || explanation != null)
+        {
+            pending = message;
+            explanation = null;
+        }
+    }
+
+    internal static void RecordCompatibility(string reason)
+    {
+        if (pending == null)
+        {
+            pending = reason;
+            explanation = "SMF_RendererCompatibility".Translate(reason);
+        }
     }
 
     internal static void Update()
@@ -33,13 +47,16 @@ internal static class RendererFailureNotice
 
         // Failures can arrive inside OnGUI or loading. Open the notice later from Update.
         string report = pending;
+        string message = explanation ?? "SMF_RendererFallback".Translate();
+        string copyLabel = (explanation == null ? "SMF_CopyError" : "SMF_CopyDetails").Translate();
         pending = null;
+        explanation = null;
 
         try
         {
             visible = new Dialog_MessageBox(
-                "SMF_RendererFallback".Translate(),
-                buttonAText: "SMF_CopyError".Translate(),
+                message,
+                buttonAText: copyLabel,
                 buttonAAction: () => GUIUtility.systemCopyBuffer = report,
                 buttonBText: "Close".Translate(),
                 title: "SMF_SettingsTitle".Translate());
