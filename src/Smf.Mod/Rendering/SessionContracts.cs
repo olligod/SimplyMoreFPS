@@ -126,11 +126,13 @@ public struct SceneContext : IEquatable<SceneContext>
     public uint HasMap;
     public uint ColorSpace;
     public uint GraphicsApi;
+    public ulong SceneEpoch;
 
     // Revision is left out on purpose; camera motion and UI focus are not part of the context at all.
     public bool Equals(SceneContext other)
     {
-        return SceneHandle == other.SceneHandle &&
+        return SceneEpoch == other.SceneEpoch &&
+            SceneHandle == other.SceneHandle &&
             RootId == other.RootId &&
             MapId == other.MapId &&
             CameraId == other.CameraId &&

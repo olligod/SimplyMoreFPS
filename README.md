@@ -10,6 +10,8 @@ For **RimWorld 1.6** on Windows, Linux and macOS. Requires **Harmony**.
 
 Put `SimplyMoreFPS` in RimWorld's `Mods` folder. Enable Harmony and Simply More FPS, then restart.
 
+**Load order:** place SMF after **Harmony**. It does not need to be at the bottom.
+
 Safe to add or remove mid-save.
 
 ## Settings
@@ -43,14 +45,16 @@ Checked on Windows, 9-10 September 2026:
 - Adaptive TPS
 - AntiAliasing: FXAA, SMAA and sharpening. SSAA is unsupported.
 
-SMF and TPS boost pause while Perspective Shift or Follow Me controls the camera. Both resume automatically afterward.
+### Pawn following
+
+SMF and TPS boost pause during Perspective Shift pawn control or Follow Me. Both resume automatically afterward.
 
 ### Don't mix
 
 - SMF and Butter++. Use SMF instead.
 - Camera+ and SimpleCameraSetting/Perspective Shift. Those mods conflict with each other.
 
-Version 0.3.11. Last updated: 10 September 2026.
+Version 0.3.12. Last updated: 11 September 2026.
 
 ## More from me
 
