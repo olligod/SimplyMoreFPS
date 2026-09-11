@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.13 - 2026-09-11
+
+- Fixed new-game loading errors when the starting dialog opens on the loading thread.
+- Fixed a renderer error when leaving a colony for the main menu.
+- Fixed camera zoom while scrolling resource lists and other scroll views.
+- Added compatibility with Nivarian Race, including correct effect positioning during pan and zoom.
+- Fixed captured visuals not refreshing when camera effects or visible layers change while paused.
+- Added automatic fallback and recovery for unsupported camera effects, with an explanatory popup. SSAA is unsupported, falls back to normal rendering.
+- Fixed a Linux startup failure with GLVND graphics drivers.
+- Removed a Mac renderer limit that could trigger unnecessary fallback.
+- Cleaned up shared rendering code and moved mod-specific handling into compatibility adapters.
+
+Restart RimWorld after updating.
+
 ## 0.3.12 - 2026-09-11
 
 - Fix stale map rendering when hosting with Multiplayer.
