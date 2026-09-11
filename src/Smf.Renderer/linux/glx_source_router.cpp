@@ -4,8 +4,6 @@
 #include <X11/Xlibint.h>
 #undef min
 #undef max
-#include <cstring>
-#include <dlfcn.h>
 
 namespace linux_session {
     namespace {
@@ -135,8 +133,7 @@ namespace linux_session {
         query = reinterpret_cast<query_fn>(table[0x78 / 8]);
 
         if (table[0x80 / 8]) {
-            Dl_info info{};
-            if (!dladdr(table[0x80 / 8], &info) || !info.dli_sname || std::strcmp(info.dli_sname, "glXSwapIntervalEXT")) return -201;
+            if (!is_glx_entrypoint(table[0x80 / 8], "glXSwapIntervalEXT")) return -201;
             interval = reinterpret_cast<interval_fn>(table[0x80 / 8]);
         }
 

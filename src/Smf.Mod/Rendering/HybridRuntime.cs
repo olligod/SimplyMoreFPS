@@ -17,6 +17,7 @@ public sealed class HybridRuntime : MonoBehaviour
     private string folder = "";
     private bool wanted;
     private bool startupFailed;
+    private string? imageEffectRestriction;
     private readonly RendererWindowStartup gameWindow = new RendererWindowStartup(message =>
         Verse.Log.Message("[Simply More FPS] " + message));
 
@@ -57,6 +58,17 @@ public sealed class HybridRuntime : MonoBehaviour
             if (wanted && !startupFailed && MapSceneReadiness.Ready && WorldRendererUtility.DrawingMap)
             {
                 renderingAllowed = CameraProviders.Resolve(Find.CameraDriver, Find.CurrentMap).Policy.AllowDetachedRendering;
+                bool effectsAllowed = MapImageEffects.CanCapture(Find.Camera, out string? reason);
+                renderingAllowed &= effectsAllowed;
+                if (reason != imageEffectRestriction)
+                {
+                    imageEffectRestriction = reason;
+                    if (reason != null)
+                    {
+                        Log.Message("[Simply More FPS] Using normal rendering while " + reason + ".");
+                        RendererFailureNotice.RecordCompatibility(reason);
+                    }
+                }
             }
 
             if (wanted && renderingAllowed && !HybridSession.Installed && !startupFailed)

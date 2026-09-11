@@ -185,7 +185,7 @@ public static partial class HybridSession
         {
             // Unity may never render another frame: restore main-owned routing, keep uncertain resources alive.
             session.EmergencyRestore();
-            session.CameraEdges?.Dispose();
+            session.ScreenMeshes?.Dispose();
             session.ReportQuitCleanup();
         }
     }
@@ -198,12 +198,12 @@ public static partial class HybridSession
         if (session.Core.State != Phase.Off || session.Core.UserEnabled || session.Generations.Count != 0 ||
             session.Core.DrawDepth != 0 || !session.TargetsRestored || session.PendingSubmission.HasValue ||
             session.PendingRouting.HasValue || session.pendingCancellations.Count != 0 ||
-            (session.CameraEdges != null && session.CameraEdges.Pending))
+            (session.ScreenMeshes != null && session.ScreenMeshes.Pending))
             throw new InvalidOperationException("Only a fully disabled and retired host can be removed.");
 
         if (session.Patches != null)
             session.Patches.UnpatchAll(session.OwnerId);
-        session.CameraEdges?.Dispose();
+        session.ScreenMeshes?.Dispose();
         session.PublishSelectionState(true);
         MapCoverageCapture.RemoveHooks();
         if (session.Scene is IMainSceneLifetime sceneLifetime)

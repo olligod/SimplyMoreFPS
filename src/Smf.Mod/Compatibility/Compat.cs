@@ -25,6 +25,17 @@ internal static class Compat
         FollowMe.Register();
     }
 
+    internal static void RegisterImageEffects()
+    {
+        AntiAliasing.Register();
+        Nivarian.Register();
+    }
+
+    internal static bool InstallScreenMeshHooks(Harmony patches)
+    {
+        return CameraPlusEdges.Install(patches);
+    }
+
     internal static void RegisterWorldOverlays()
     {
         if (!UnityData.IsInMainThread)

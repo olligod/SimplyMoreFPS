@@ -44,15 +44,15 @@ public static partial class HybridSession
             __state.BeginContext();
             if (Event.current != null && Event.current.type == EventType.Repaint && __state.ContextDepth <= 1)
             {
-                __state.ReplayCameraPlusEdges();
+                __state.ReplayScreenMeshes();
             }
         }
     }
 
-    internal static bool TryCaptureCameraPlusEdge(Mesh mesh, Matrix4x4 matrix, Material material, int layer)
+    internal static bool TryCaptureScreenMesh(Mesh mesh, Matrix4x4 matrix, Material material, int layer)
     {
         Session session = current;
-        if (session == null || !session.CaptureRouting || session.CameraEdges == null)
+        if (session == null || !session.CaptureRouting || session.ScreenMeshes == null)
         {
             return false;
         }
@@ -60,17 +60,17 @@ public static partial class HybridSession
         session.CheckMain();
         try
         {
-            return session.CameraEdges.Capture(mesh, matrix, material, layer);
+            return session.ScreenMeshes.Capture(mesh, matrix, material, layer);
         }
         catch (Exception error)
         {
             try
             {
-                session.CameraEdges.RestoreWorldDraws();
+                session.ScreenMeshes.RestoreWorldDraws();
             }
             catch (Exception restoreError)
             {
-                error = new AggregateException("Camera+ edge capture and restoration both failed.", error, restoreError);
+                error = new AggregateException("Screen mesh capture and restoration both failed.", error, restoreError);
             }
 
             session.Fail(error);
@@ -174,7 +174,7 @@ public static partial class HybridSession
         private bool frameUsable;
         private readonly CommandBuffer dispatchCommands = new CommandBuffer { name = "SMF persistent session ordered callback" };
         private int attemptedFrame = -1;
-        internal CameraPlusEdges CameraEdges;
+        internal ScreenMeshCapture ScreenMeshes;
 
         internal int ContextDepth;
         internal int WorldDepth;
@@ -221,14 +221,14 @@ public static partial class HybridSession
 
             Compat.RegisterWorldOverlays();
             SyncWorldOverlays();
-            CameraEdges = CameraPlusEdges.Install(Patches);
+            ScreenMeshes = Compat.InstallScreenMeshHooks(Patches) ? new ScreenMeshCapture() : null;
         }
 
-        internal void ReplayCameraPlusEdges()
+        internal void ReplayScreenMeshes()
         {
             try
             {
-                CameraEdges?.Replay();
+                ScreenMeshes?.Replay();
             }
             catch (Exception error)
             {
@@ -601,9 +601,9 @@ public static partial class HybridSession
                 Capture?.Coverage?.FinishFrame();
                 bool captured = TargetHeld && Frame == Time.frameCount;
                 // A frame without IMGUI still needs its deferred edge indicators on the original target.
-                if (CameraEdges != null && CameraEdges.Pending && RestoreTargets())
+                if (ScreenMeshes != null && ScreenMeshes.Pending && RestoreTargets())
                 {
-                    ReplayCameraPlusEdges();
+                    ReplayScreenMeshes();
                 }
 
                 if (Core.State == Phase.Off || Core.State == Phase.Exited)

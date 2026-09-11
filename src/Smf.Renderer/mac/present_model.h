@@ -3,7 +3,9 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <exception>
 #include <limits>
+#include <vector>
 
 // Dependency model for the original layer's own presentation: an ordered EOF
 // marker, target work on a drawable, a successful GPU completion and a positive
@@ -34,8 +36,15 @@ namespace present_observer {
     struct submission {
         uint64_t id = 0, object = 0, created = 0, enqueue_begin = 0, enqueue_end = 0;
         bool completed = false, good = false, queue_call = false;
-        std::array<operation, 16> operations{};
+        std::vector<operation> operations;
         uint32_t count = 0;
+
+        void reset() {
+            // Reuse the allocated history between submissions.
+            id = object = created = enqueue_begin = enqueue_end = 0;
+            completed = good = queue_call = false;
+            count = 0;
+        }
     };
 
     struct acquisition {
@@ -145,8 +154,12 @@ namespace present_observer {
             }
 
             if (b->count == b->operations.size()) {
-                fail(fault_kind::pool);
-                return nullptr;
+                try {
+                    b->operations.emplace_back();
+                } catch (const std::exception&) {
+                    fail(fault_kind::pool);
+                    return nullptr;
+                }
             }
 
             auto& o = b->operations[b->count++];
@@ -305,7 +318,7 @@ namespace present_observer {
 
             // Retired acquisitions release the buffers they depended on.
             for (auto& b : buffers) {
-                if (reclaimable(b)) b = {};
+                if (reclaimable(b)) b.reset();
             }
         }
 
@@ -345,7 +358,7 @@ namespace present_observer {
             sweep();
             for (auto& b : buffers) {
                 if (b.id) continue;
-                b = {};
+                b.reset();
                 b.id = next();
                 b.object = object;
                 b.created = event();
@@ -655,7 +668,7 @@ namespace present_observer {
                 if (b->operations[i].type != operation::write || watched(b->operations[i].texture)) return false;
             }
 
-            *b = {};
+            b->reset();
             return true;
         }
 

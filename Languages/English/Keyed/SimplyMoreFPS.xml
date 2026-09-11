@@ -12,4 +12,10 @@
   <SMF_MeterFormat>{0} FPS / {1} TPS</SMF_MeterFormat>
   <SMF_RendererFallback>Simply More FPS stopped after an error and is falling back to normal game rendering. Your save is unaffected.\n\nPlease copy the error and include it when reporting the issue.</SMF_RendererFallback>
   <SMF_CopyError>Copy error</SMF_CopyError>
+  <SMF_RendererCompatibility>Simply More FPS is using normal game rendering because {0}.\n\nSMF and TPS boost resume automatically when this is no longer needed.</SMF_RendererCompatibility>
+  <SMF_CopyDetails>Copy details</SMF_CopyDetails>
+  <SMF_CustomCameraTarget>the map camera uses a custom render target</SMF_CustomCameraTarget>
+  <SMF_AntiAliasingCameraMode>AntiAliasing is using a camera mode that needs normal rendering</SMF_AntiAliasingCameraMode>
+  <SMF_DepthColorCorrection>color correction needs depth or selective rendering</SMF_DepthColorCorrection>
+  <SMF_CustomImageEffect>the map camera uses {0}</SMF_CustomImageEffect>
 </LanguageData>

@@ -1,21 +1,73 @@
 using System;
 using System.Reflection;
 using HarmonyLib;
+using SimplyMoreFPS.Rendering;
 using UnityEngine;
 using Verse;
 
 namespace SimplyMoreFPS.Compatibility;
 
 // Reuse the live effect: adding another controller replaces AntiAliasing's singleton.
-internal sealed class AntiAliasing
+internal sealed class AntiAliasing : IMapImageEffect
 {
     internal const string ControllerName = "AntiAliasing.Rendering.AntiAliasingController";
 
     private readonly MonoBehaviour controller;
     private readonly Action<RenderTexture, RenderTexture> render;
-    private readonly Func<object> getSettings;
-    private readonly Func<object, int> readMethod;
-    private readonly int ssaa;
+
+    public MonoBehaviour Source => controller;
+
+    // Bind settings only when this mod's controller is encountered.
+    private static class Settings
+    {
+        internal static readonly Func<object> Get;
+        internal static readonly Func<object, int> ReadMethod;
+        internal static readonly int Ssaa;
+
+        static Settings()
+        {
+            Type mod = Compat.RequireType("AntiAliasing.AntiAliasingMod");
+            Type settingsType = Compat.RequireType("AntiAliasing.AntiAliasingSettings");
+            Type methodType = Compat.RequireType("AntiAliasing.AntiAliasingType");
+            if (!methodType.IsEnum || Enum.GetUnderlyingType(methodType) != typeof(int))
+            {
+                throw new InvalidOperationException("Unsupported AntiAliasing method enum.");
+            }
+
+            PropertyInfo property = mod.GetProperty("Settings", Compat.AnyStatic)
+                ?? throw new InvalidOperationException("AntiAliasing settings property is missing.");
+            MethodInfo getter = property.GetGetMethod(true)
+                ?? throw new InvalidOperationException("AntiAliasing settings getter is missing.");
+            if (property.PropertyType != settingsType)
+            {
+                throw new InvalidOperationException("Unsupported AntiAliasing settings property.");
+            }
+
+            Get = (Func<object>)Delegate.CreateDelegate(typeof(Func<object>), getter);
+            ReadMethod = Compat.Getter<int>(Compat.Field(settingsType, "antiAliasingType", methodType));
+            Ssaa = Convert.ToInt32(Enum.Parse(methodType, "SSAA"));
+        }
+    }
+
+    internal static void Register()
+    {
+        MapImageEffects.Register(ControllerName, source => new AntiAliasing(source), Restriction);
+    }
+
+    private static string? Restriction(MonoBehaviour source)
+    {
+        // SSAA disables OnRenderImage before replacing the camera target.
+        return CanCapture ? null : "SMF_AntiAliasingCameraMode".Translate().ToString();
+    }
+
+    internal static bool CanCapture
+    {
+        get
+        {
+            object settings = Settings.Get();
+            return settings != null && Settings.ReadMethod(settings) != Settings.Ssaa;
+        }
+    }
 
     internal AntiAliasing(MonoBehaviour controller)
     {
@@ -25,26 +77,6 @@ internal sealed class AntiAliasing
         }
 
         this.controller = controller;
-        Type mod = Compat.RequireType("AntiAliasing.AntiAliasingMod");
-        Type settingsType = Compat.RequireType("AntiAliasing.AntiAliasingSettings");
-        Type methodType = Compat.RequireType("AntiAliasing.AntiAliasingType");
-        if (!methodType.IsEnum || Enum.GetUnderlyingType(methodType) != typeof(int))
-        {
-            throw new InvalidOperationException("Unsupported AntiAliasing method enum.");
-        }
-
-        PropertyInfo property = mod.GetProperty("Settings", Compat.AnyStatic)
-            ?? throw new InvalidOperationException("AntiAliasing settings property is missing.");
-        MethodInfo getter = property.GetGetMethod(true)
-            ?? throw new InvalidOperationException("AntiAliasing settings getter is missing.");
-        if (property.PropertyType != settingsType)
-        {
-            throw new InvalidOperationException("Unsupported AntiAliasing settings property.");
-        }
-
-        getSettings = (Func<object>)Delegate.CreateDelegate(typeof(Func<object>), getter);
-        readMethod = Compat.Getter<int>(Compat.Field(settingsType, "antiAliasingType", methodType));
-        ssaa = Convert.ToInt32(Enum.Parse(methodType, "SSAA"));
 
         MethodInfo callback = AccessTools.Method(controller.GetType(), "OnRenderImage",
             new[] { typeof(RenderTexture), typeof(RenderTexture) });
@@ -57,23 +89,27 @@ internal sealed class AntiAliasing
             typeof(Action<RenderTexture, RenderTexture>), controller, callback);
     }
 
-    internal bool Matches(MonoBehaviour value) => controller == value;
-
-    internal void Validate()
+    public bool Prepare()
     {
-        object current = getSettings();
+        Validate();
+        return true;
+    }
+
+    public void Validate()
+    {
+        object current = Settings.Get();
         if (current == null)
         {
             throw new InvalidOperationException("AntiAliasing settings are not initialized.");
         }
 
-        if (readMethod(current) == ssaa)
+        if (Settings.ReadMethod(current) == Settings.Ssaa)
         {
             throw new InvalidOperationException("Map coverage does not support AntiAliasing SSAA camera target replacement.");
         }
     }
 
-    internal void Render(RenderTexture input, RenderTexture output)
+    public void Render(Camera projection, RenderTexture input, RenderTexture output)
     {
         if (!UnityData.IsInMainThread || controller == null || !controller.isActiveAndEnabled)
         {
@@ -82,5 +118,9 @@ internal sealed class AntiAliasing
 
         Validate();
         render(input, output);
+    }
+
+    public void Dispose()
+    {
     }
 }

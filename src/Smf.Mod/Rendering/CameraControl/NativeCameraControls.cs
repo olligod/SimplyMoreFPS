@@ -55,6 +55,7 @@ public static class NativeCameraControls
             harmony.Patch(
                 AccessTools.Method(typeof(CameraDriver), nameof(CameraDriver.CameraDriverOnGUI)),
                 new HarmonyMethod(typeof(NativeCameraControls), nameof(BeforeCameraGui)));
+            ScrollViewInput.Install(harmony, mainThread);
         }
         catch (Exception error)
         {
@@ -86,6 +87,7 @@ public static class NativeCameraControls
     {
         RequireMainThread();
         installed = false;
+        ScrollViewInput.Clear();
         harmony?.UnpatchAll(Owner);
         harmony = null;
     }
@@ -234,6 +236,8 @@ public static class NativeCameraControls
 
             if (windows[i].absorbInputAroundWindow) policy.Flags |= 4;
         }
+
+        ScrollViewInput.Append(ref policy);
 
         int result = api.Publish(ref policy, 1088);
         if (result == 1) busyPolicy++;

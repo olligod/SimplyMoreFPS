@@ -13,6 +13,7 @@ namespace linux_session {
         void** slot = nullptr;
     };
 
+    bool is_glx_entrypoint(void*, const char* name);
     int find_unity_swap_slot(Display*, GLXDrawable, GLXContext, unity_swap_slot&);
     bool restore_unity_swap_slot(const unity_swap_slot&, Display*, GLXDrawable, GLXContext, void* hook, void* original);
 
