@@ -42,9 +42,10 @@ namespace mac {
             uint64_t generation = 0, content = 0, frame = 0, source_serial = 0;
             bool sealed = false, abandoned = false, has_world = false;
             image_layer base{}, world{}, hud{}, cache{};
+            std::shared_ptr<captured_scene> scene;
             session_pose pose{};
             affine actual{};
-            __strong id<MTLTexture> inputs[4]{nil, nil, nil, nil};
+            __strong id<MTLTexture> inputs[4 + smf_scene::maximum_images]{};
             std::shared_ptr<source_completion> base_copy, seal_copy, cache_dependency;
         };
 
@@ -53,6 +54,7 @@ namespace mac {
             camera_model model{};
             session_cache cache_packet{};
             image_layer cache{};
+            std::shared_ptr<captured_scene> scene;
             std::shared_ptr<source_completion> cache_copy;
             uint64_t target_queued_frame = 0;
             bool retiring = false;
@@ -69,7 +71,8 @@ namespace mac {
             session_pre_gui pre{};
             session_frame frame{};
             session_native_frame marker{};
-            __strong id<MTLTexture> inputs[4]{nil, nil, nil, nil};
+            std::shared_ptr<smf_scene::snapshot> scene;
+            __strong id<MTLTexture> inputs[4 + smf_scene::maximum_images]{};
         };
 
         // The draw the worker is currently submitting.
@@ -78,6 +81,9 @@ namespace mac {
             bool hidden = false, selection_allowed = false;
             uint64_t session = 0;
             image_layer base{}, world{}, hud{}, cache{};
+            std::shared_ptr<captured_scene> scene;
+            session_pose pose{};
+            scene_view scene_desired{};
             affine desired{};
             camera_model model{};
             uint64_t bridge_epoch = 0;
@@ -114,6 +120,7 @@ namespace mac {
 
         uint64_t token_floor = 0, session_floor = 0, show_transaction = 0, show_completed_ns = 0;
         uint64_t generation_floor = 0, restore_after_frame = 0;
+        uint64_t next_scene_draw_ns = 0;
         int visible = -1;
         bool started = false, worker_ready = false, source_released = false, joined = false;
         bool routing_fence = false, stop_worker = false;
@@ -154,16 +161,26 @@ namespace mac {
 
         texture_budget budget() {
             texture_budget result;
-            auto add = [&](const image_layer& l) { result.add((uint64_t)(__bridge void*)l.texture, l.width, l.height); };
+            auto add = [&](const image_layer& l) {
+                result.add((uint64_t)(__bridge void*)l.texture, l.width, l.height, texture_bytes(l.texture));
+            };
+            auto add_scene = [&](const std::shared_ptr<captured_scene>& scene) {
+                if (!scene) return;
+                for (const auto& image : scene->images) add(image);
+            };
 
             for (auto& s : slots) {
                 add(s.base);
                 add(s.world);
                 add(s.hud);
                 add(s.cache);
+                add_scene(s.scene);
             }
 
-            for (auto& g : generations) add(g.cache);
+            for (auto& g : generations) {
+                add(g.cache);
+                add_scene(g.scene);
+            }
             return result;
         }
 
@@ -171,9 +188,25 @@ namespace mac {
             return l.texture && l.width == width && l.height == height ? 0 : uint64_t(width) * height * 4;
         }
 
-        // Layer pool plus one hidden preparation target.
+        bool has_scene_images() {
+            if (compositor.scene_allocated.load(std::memory_order_acquire)) return true;
+            for (const auto& slot : slots) {
+                if (slot.scene) return true;
+            }
+            for (const auto& generation : generations) {
+                if (generation.scene) return true;
+            }
+            return false;
+        }
+
+        uint64_t texture_limit() {
+            return has_scene_images() ? texture_budget::scene_limit : texture_budget::limit;
+        }
+
+        // Scene reserve covers both drawable sizes and Half targets during resize.
         uint64_t display_reserve() {
-            return uint64_t(window.width) * window.height * 4 * 4;
+            uint64_t bytes = uint64_t(window.width) * window.height * 4 * 4;
+            return has_scene_images() ? texture_budget::scene_display_reserve : bytes;
         }
 
         bool texture_referenced(id<MTLTexture> texture, const source_slot* owner) {
@@ -209,7 +242,7 @@ namespace mac {
             const int index = int(&slot - slots.data());
             if (&slot == selected || index == visible || index == work.slot || slot.state != slot_free ||
                 slot.generation || slot.content || slot.frame || slot.source_serial || slot.sealed || slot.abandoned ||
-                slot.has_world || slot.base_copy || slot.seal_copy || slot.cache_dependency || slot.cache.texture) return false;
+                slot.has_world || slot.base_copy || slot.seal_copy || slot.cache_dependency || slot.cache.texture || slot.scene) return false;
 
             for (auto input : slot.inputs) {
                 if (input) return false;
@@ -221,7 +254,7 @@ namespace mac {
         // Idle storage must not starve a new frame. Keep the selected textures:
         // the caller computed extra from their existing allocations.
         bool admit_textures(uint64_t extra, const source_slot* selected) {
-            if (budget().allows(extra, display_reserve())) return true;
+            if (budget().allows(extra, display_reserve(), texture_limit())) return true;
 
             for (auto& slot : slots) {
                 if (!idle_storage(slot, selected)) continue;
@@ -230,7 +263,7 @@ namespace mac {
                 slot.base = {};
                 slot.world = {};
                 slot.hud = {};
-                if (budget().allows(extra, display_reserve())) return true;
+                if (budget().allows(extra, display_reserve(), texture_limit())) return true;
             }
             return false;
         }
@@ -270,7 +303,8 @@ namespace mac {
         }
 
         bool source_done(const source_slot& s) {
-            return completed(s.base_copy) && (!s.sealed || completed(s.seal_copy)) && (!s.cache_dependency || completed(s.cache_dependency));
+            return completed(s.base_copy) && (!s.sealed || completed(s.seal_copy)) &&
+                (!s.cache_dependency || completed(s.cache_dependency)) && (!s.scene || !s.sealed || s.scene->completed());
         }
 
         // The newest sealed, usable slot of a generation.
@@ -334,6 +368,18 @@ namespace mac {
         }
 
         void retire_sources() {
+            if (pending.serial && is_prepare(pending.operation)) {
+                for (auto& generation : generations) {
+                    if (generation.status.generation != pending.generation) generation.scene.reset();
+                }
+                for (int i = 0; i < 6; ++i) {
+                    auto& slot = slots[i];
+                    if (slot.scene && slot.generation != pending.generation && i != visible && i != work.slot) {
+                        slot.abandoned = true;
+                    }
+                }
+            }
+
             // Only the render callback releases retained source textures. A cancelled
             // ticket stays on the ledger until this ordered pump consumes it.
             for (size_t i = 0; i < tickets.size(); ++i) {
@@ -370,7 +416,8 @@ namespace mac {
                     for (auto& input : s.inputs) input = nil;
 
                     bool failed = !s.base_copy->retired_without_failure() || (s.sealed && !s.seal_copy->retired_without_failure()) ||
-                        (s.cache_dependency && !s.cache_dependency->retired_without_failure());
+                        (s.cache_dependency && !s.cache_dependency->retired_without_failure()) ||
+                        (s.scene && s.sealed && !s.scene->retired_without_failure());
                     if (failed) {
                         s.state = slot_retiring;
                         s.abandoned = true;
@@ -378,7 +425,7 @@ namespace mac {
                     }
 
                     const bool usable = s.base_copy->succeeded() && (!s.sealed || s.seal_copy->succeeded()) &&
-                        (!s.cache_dependency || s.cache_dependency->succeeded());
+                        (!s.cache_dependency || s.cache_dependency->succeeded()) && (!s.scene || s.scene->succeeded());
                     // A never-submitted copy can retire its producer lease, but cannot
                     // publish pixels even if its caller left the slot in slot_source.
                     if (!usable) {
@@ -408,6 +455,7 @@ namespace mac {
                 if (g.retiring && !has_leases(g.status.generation) && !has_dispatches(g.status.generation)) {
                     g.cache = {};
                     g.cache_copy.reset();
+                    g.scene.reset();
                     g.status.state = 5;
                     g.status.retired_serial = g.status.retire_requested;
                 }
@@ -562,6 +610,14 @@ namespace mac {
             auto* g = find_generation(target_generation);
             if (!g) return false;
 
+            // Expensive scene reconstruction follows the active display cadence.
+            // The worker's polling loop and ground rendering retain their timing.
+            if (s.scene) {
+                const uint64_t now = native_now();
+                if (now < next_scene_draw_ns) return false;
+                next_scene_draw_ns = now + window.scene_interval_ns.load(std::memory_order_acquire);
+            }
+
             s.state = slot_worker;
             next.slot = index;
             next.hidden = hidden;
@@ -569,6 +625,8 @@ namespace mac {
             next.world = s.has_world ? s.world : image_layer{};
             next.hud = s.hud;
             next.cache = s.cache;
+            next.scene = s.scene;
+            next.pose = s.pose;
             next.desired = s.actual;
             next.model = g->model;
             next.bridge_epoch = s.pose.bridge_epoch;
@@ -601,22 +659,50 @@ namespace mac {
             double x = 0, y = 0;
             bool middle = false, focus = false, left = false, pointer = false;
 
-            if (!next.hidden && next.world.texture) {
+            double root_x = next.pose.root_x, root_z = next.pose.root_z;
+            double half_height = next.pose.orthographic_size;
+            if (!next.hidden && (next.world.texture || next.scene)) {
                 pointer = camera_control::observe(x, y, middle, focus, left);
 
                 smf_bridge_desired desired{};
                 if (camera_bridge::worker_prepare(focus, pointer, x, y, middle, desired) == 0) {
                     pose_valid = desired.epoch == next.bridge_epoch && desired.map_id == next.map &&
                         next.model.root(desired.x, desired.z, desired.projection_half_height, next.desired);
+                    root_x = desired.x;
+                    root_z = desired.z;
+                    half_height = desired.projection_half_height;
                 }
             } else {
                 camera_control::clear();
             }
 
+            if (next.scene && pose_valid) {
+                const auto& pose = next.pose;
+                const double shake_x = pose.x - pose.root_x;
+                const double shake_z = pose.z - pose.root_z;
+                affine actual = next.desired;
+                actual.c -= actual.a * shake_x + actual.b * shake_z;
+                actual.f -= actual.d * shake_x + actual.e * shake_z;
+                if (root_x == pose.root_x && root_z == pose.root_z && half_height == pose.orthographic_size) {
+                    for (uint32_t i = 0; i < next.scene->packet.frame.layer_count; ++i) {
+                        const auto& layer = next.scene->packet.layers[i];
+                        if (layer.kind == smf_scene::live_map) {
+                            actual = {layer.affine[0], layer.affine[1], layer.affine[2],
+                                layer.affine[3], layer.affine[4], layer.affine[5]};
+                            break;
+                        }
+                    }
+                }
+                next.scene_desired = {next.base.width, next.base.height,
+                    {actual.a, actual.b, actual.c, actual.d, actual.e, actual.f}, root_x + shake_x, root_z + shake_z};
+                next.desired = actual;
+            }
+
             auto selection_geometry = compositor.selection.read(selection_snapshot, next.session, next.receipt->content, next.map,
                 next.desired, focus && next.selection_allowed, pointer, left, x, y);
-            if (!next.selection_allowed || !next.world.texture) selection_geometry.visible = false;
-            int result = pose_valid ? compositor.draw(next.base, next.world, next.hud, next.cache, next.desired, next.receipt, next.hidden, selection_geometry) : 1;
+            if (!next.selection_allowed || (!next.world.texture && !next.scene)) selection_geometry.visible = false;
+            int result = pose_valid ? compositor.draw(next.base, next.world, next.hud, next.cache, next.desired,
+                next.receipt, next.hidden, selection_geometry, next.scene.get(), next.scene_desired) : 1;
 
             const bool submitted = next.receipt->submission_attempted.load(std::memory_order_acquire);
             {
@@ -795,6 +881,124 @@ namespace mac {
             }
         }
 
+        void seal_scene(dispatch_ticket& d, source_slot& slot, generation_state& generation,
+            IUnityGraphicsMetalV2* copies_api) {
+            const auto& frame = d.frame;
+            slot.has_world = true;
+            slot.pose = frame.pose;
+            affine actual{};
+            if (!(frame.flags & 1) || frame.pose.unity_frame != frame.source_frame ||
+                !pose_projection(frame.pose, slot.base.width, slot.base.height, actual) ||
+                !generation.model.accept(frame.pose, actual, slot.base.width, slot.base.height) ||
+                !generation.model.root(frame.pose.root_x, frame.pose.root_z, frame.pose.orthographic_size, slot.actual)) {
+                slot.abandoned = true;
+                fail(malformed);
+                return;
+            }
+
+            auto scene = std::make_shared<captured_scene>();
+            scene->packet = *d.scene;
+            std::array<copy_pair, smf_scene::maximum_images + 2> copies{};
+            std::array<bool, smf_scene::maximum_images> copying{};
+            std::array<uint32_t, smf_scene::maximum_images> aliases{};
+            aliases.fill(smf_scene::no_image);
+            size_t count = 2;
+            slot.hud.width = slot.base.width;
+            slot.hud.height = slot.base.height;
+            slot.hud.flip = (frame.flags & 16) != 0;
+            slot.inputs[1] = d.inputs[1];
+            copies[0] = {d.inputs[1], &slot.hud};
+            slot.world.width = slot.base.width;
+            slot.world.height = slot.base.height;
+            slot.world.flip = (frame.flags & 8) != 0;
+            slot.world.source = actual;
+            slot.inputs[2] = d.inputs[2];
+            copies[1] = {d.inputs[2], &slot.world};
+            uint64_t extra = allocation(slot.hud, slot.base.width, slot.base.height) +
+                allocation(slot.world, slot.base.width, slot.base.height);
+            uint64_t required = uint64_t(slot.base.width) * slot.base.height * 12;
+
+            for (uint32_t i = 0; i < scene->packet.frame.image_count; ++i) {
+                const auto& metadata = scene->packet.images[i];
+                id<MTLTexture> input = d.inputs[4 + i];
+                if (!scene_texture_valid(input, source_device, metadata)) {
+                    slot.abandoned = true;
+                    fail(malformed);
+                    return;
+                }
+                for (uint32_t j = 0; j < i; ++j) {
+                    if (std::memcmp(&metadata, &scene->packet.images[j], sizeof(metadata)) == 0) {
+                        aliases[i] = j;
+                        break;
+                    }
+                }
+                if (aliases[i] != smf_scene::no_image) continue;
+                required += uint64_t(metadata.width) * metadata.height * texture_bytes(input);
+                bool reused = false;
+                if (generation.scene) {
+                    for (uint32_t j = 0; j < generation.scene->packet.frame.image_count; ++j) {
+                        const auto& prior = generation.scene->packet.images[j];
+                        if (std::memcmp(&metadata, &prior, sizeof(metadata)) != 0) continue;
+                        scene->images[i] = generation.scene->images[j];
+                        scene->dependencies[i] = generation.scene->dependencies[j];
+                        reused = true;
+                        break;
+                    }
+                }
+                if (reused) continue;
+
+                auto& image = scene->images[i];
+                image.width = metadata.width;
+                image.height = metadata.height;
+                image.flip = (metadata.flags & smf_scene::flip_y) != 0;
+                extra += uint64_t(metadata.width) * metadata.height * texture_bytes(input);
+                slot.inputs[4 + i] = input;
+                copies[count++] = {input, &image, true};
+                copying[i] = true;
+            }
+
+            slot.scene = scene;
+            if (!texture_budget::allows_scene_packet(required)) {
+                NSLog(@"SMF scene exceeds texture limit: required=%llu display=%llu limit=%llu",
+                    (unsigned long long)required, (unsigned long long)display_reserve(),
+                    (unsigned long long)texture_budget::scene_packet_limit);
+                slot.scene.reset();
+                slot.abandoned = true;
+                fail(E_OUTOFMEMORY);
+                return;
+            }
+            if (!admit_textures(extra, &slot)) {
+                slot.scene.reset();
+                slot.abandoned = true;
+                state.dropped_frames++;
+                return;
+            }
+
+            int encoded = encode_copies(copies_api, copies.data(), count, slot.seal_copy);
+            for (uint32_t i = 0; i < scene->packet.frame.image_count; ++i) {
+                if (copying[i]) scene->dependencies[i] = slot.seal_copy;
+                if (aliases[i] != smf_scene::no_image) {
+                    scene->images[i] = scene->images[aliases[i]];
+                    scene->dependencies[i] = scene->dependencies[aliases[i]];
+                }
+            }
+            slot.sealed = slot.seal_copy != nullptr;
+            if (encoded != 0) {
+                slot.abandoned = true;
+                slot.state = encoded < 0 && slot.seal_copy ? slot_quarantined : slot_retiring;
+                if (encoded < 0) fail(gpu_fault);
+                else state.dropped_frames++;
+                return;
+            }
+
+            generation.scene = scene;
+            slot.source_serial = ++state.source_commit;
+            generation.status.source_commit = slot.source_serial;
+            generation.status.base_format = uint32_t(slot.base.texture.pixelFormat);
+            generation.status.world_format = uint32_t(slot.world.texture.pixelFormat);
+            generation.status.hud_format = uint32_t(slot.hud.texture.pixelFormat);
+        }
+
         void seal(dispatch_ticket& d, IUnityGraphicsMetalV2* copies_api) {
             auto& f = d.frame;
             if (target_probe_mode) return;
@@ -812,6 +1016,11 @@ namespace mac {
 
             if (!s) {
                 state.dropped_frames++;
+                return;
+            }
+
+            if (d.scene) {
+                seal_scene(d, *s, *g, copies_api);
                 return;
             }
 
@@ -1014,7 +1223,7 @@ namespace mac {
             if (!ticket || !token) return malformed;
             *ticket = nullptr;
             *token = 0;
-            if (!on_main() || !p || bytes != sizeof(*p) || p->size != bytes || p->version != (kind == 2 ? 3u : 1u) || !p->source_frame) return malformed;
+            if (!on_main() || !p || bytes != sizeof(*p) || p->size != bytes || p->version != (kind == 2 ? 4u : 1u) || !p->source_frame) return malformed;
 
             std::unique_lock<std::mutex> lock(gate, std::try_to_lock);
             if (!lock) return 1;
@@ -1069,9 +1278,25 @@ namespace mac {
                 if (!(p->flags & 1) && !valid_absent_world(*p)) return malformed;
 
                 d.frame = *p;
+                d.frame.scene_description = 0;
                 d.inputs[1] = (__bridge id<MTLTexture>)(void*)p->hud_texture;
                 d.inputs[2] = (__bridge id<MTLTexture>)(void*)p->world_texture;
                 d.inputs[3] = (__bridge id<MTLTexture>)(void*)p->cache.texture;
+                if (p->scene_description) {
+                    auto* generation = find_generation(p->generation);
+                    d.scene = std::make_shared<smf_scene::snapshot>();
+                    if (!(p->flags & 1) || !smf_scene::read_snapshot(
+                        reinterpret_cast<const smf_scene::description*>(p->scene_description), p->source_frame,
+                        generation->status.width, generation->status.height, *d.scene)) return malformed;
+                    for (uint32_t i = 0; i < d.scene->frame.effect_count; ++i) {
+                        if (d.scene->effects[i].kind == smf_scene::image_filter) return E_NOTIMPL;
+                    }
+                    for (uint32_t i = 0; i < d.scene->frame.image_count; ++i) {
+                        const auto& image = d.scene->images[i];
+                        if (image.texture == p->hud_texture) return malformed;
+                        d.inputs[4 + i] = (__bridge id<MTLTexture>)(void*)image.texture;
+                    }
+                }
             } else {
                 d.marker = *p;
 
@@ -1196,6 +1421,7 @@ SMF_MAC_API int smf_session_start(uint64_t original, uint64_t session) {
     staged_target = {};
     worker_ready = false;
     visible = -1;
+    next_scene_draw_ns = 0;
     pending = {};
     acknowledgement = {};
     staged_base = {};

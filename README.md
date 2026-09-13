@@ -2,7 +2,8 @@
 
 **Feels like infinite FPS.** Your camera stays perfectly smooth, even when the game lags.
 
-Near-zero overhead in Dubs profiling (**under 0.2%**). With **TPS boost**, you can even gain TPS.
+Camera movement stays smooth on ground and space maps, including the planet background and orbital debris.
+With **TPS boost**, lowering the Game FPS target can leave more time for simulation.
 
 ## Install
 
@@ -59,7 +60,7 @@ SMF and TPS boost pause during Perspective Shift pawn control or Follow Me. Both
 - SMF and Butter++. Use SMF instead.
 - Camera+ and SimpleCameraSetting/Perspective Shift. Those mods conflict with each other.
 
-Version 0.3.13. Last updated: 11 September 2026.
+Version 0.3.14. Last updated: 13 September 2026.
 
 ## More from me
 

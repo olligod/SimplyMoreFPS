@@ -7,6 +7,7 @@
 #include "geometry_policy.h"
 #include "performance_status.h"
 #include "x_error_ledger.h"
+#include "scene_compositor.h"
 #include "../common/selection_overlay.h"
 #include <GL/gl.h>
 #include <GL/glx.h>
@@ -53,7 +54,8 @@ namespace linux_session {
 
         bool discover(uint32_t width, uint32_t height);
         bool own() const;
-        bool copy(GLuint source, GLuint& owned, uint32_t width, uint32_t height, bool original = false);
+        bool copy(GLuint source, GLuint& owned, uint32_t width, uint32_t height, bool original = false,
+                  GLenum format = GL_RGBA8);
         void release();
     };
 
@@ -80,6 +82,13 @@ namespace linux_session {
     // The worker thread's own GLX context, sharing objects with the source context.
     struct worker_glx {
         selection::worker overlay;
+        smf_scene::scene_compositor scene;
+        bool scene_ready = false;
+        GLsync scene_fence = nullptr;
+        int64_t scene_interval = 16666667;
+        int64_t scene_next = 0;
+        int64_t scene_started = 0;
+        int64_t scene_rate_check = 0;
         Display* display = nullptr; // borrowed from Unity, never closed here
         Display* input_display = nullptr; // owned XInput-only connection, never creates GL
         Window original = 0;
@@ -107,9 +116,12 @@ namespace linux_session {
         bool create(const source_glx&, Window, uint32_t, uint32_t);
         geometry_outcome geometry(geometry_ticket, uint64_t* facts);
         bool healthy();
+        int scene_available();
+        bool scene_submitted();
         draw_outcome draw(geometry_ticket ticket, const layer& base, const layer& world, const layer& hud, const layer& cache,
                           const affine& desired, uint32_t logical_width, uint32_t logical_height,
-                          const selection::geometry& selection_geometry);
+                          const selection::geometry& selection_geometry,
+                          const smf_scene::frame* scene_frame = nullptr, const smf_scene::view* scene_view = nullptr);
         hidden_surface take_initial_hidden();
         geometry_outcome create_hidden(uint32_t, uint32_t, hidden_surface&);
         bool destroy_hidden(hidden_surface&);

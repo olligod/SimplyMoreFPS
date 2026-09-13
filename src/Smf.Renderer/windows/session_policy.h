@@ -27,10 +27,11 @@ namespace session {
     }
 
     inline bool frame_layout_matches(uint32_t bytes, uint32_t size, uint32_t version) {
-        return bytes == sizeof(session_frame) && size == bytes && version == 3;
+        return bytes == sizeof(session_frame) && size == bytes && version == 4;
     }
 
     inline bool cache_valid(const session_frame& frame) {
+        if (frame.scene_description) return false;
         const auto& cache = frame.cache;
 
         if (!(frame.flags & session_has_map)) {
@@ -78,6 +79,13 @@ namespace session {
         uint64_t session, uint64_t content, uint64_t generation) {
         return !sealed && session == expected_session && content == fence && g.generation == generation &&
             g.content_revision == content && g.state > 0 && g.state < 4;
+    }
+
+    inline bool content_superseded(const session_command& command, uint32_t phase, uint64_t fence) {
+        // A committed activation must report its real result so main retires the right generation.
+        const bool content_bound = command.operation == op_prepare_hidden || command.operation == op_prepare_replacement ||
+            (command.operation == op_activate && phase == 0);
+        return content_bound && command.content_revision != fence;
     }
 
     inline bool retain_historical(const session_status& status, uint64_t fence) {

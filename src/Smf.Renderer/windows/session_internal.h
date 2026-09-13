@@ -8,6 +8,8 @@
 #include <wrl/client.h>
 #include <atomic>
 #include <array>
+#include <memory>
+#include "../common/scene_snapshot.h"
 #include "session_bridge.h"
 #include "session_policy.h"
 #define SMF_BRIDGE_INTERNAL
@@ -15,6 +17,8 @@
 #include "camera_control.h"
 
 namespace session {
+
+    class scene_channel;
 
     using Microsoft::WRL::ComPtr;
 
@@ -37,6 +41,8 @@ namespace session {
         ID3D11Texture2D* first = nullptr;
         ID3D11Texture2D* second = nullptr;
         ID3D11Texture2D* cache = nullptr;
+        smf_scene::snapshot scene{};
+        bool has_scene = false;
     };
 
     struct operation {
@@ -92,6 +98,7 @@ namespace session {
         std::array<session_ack, ack_count> acks{};
         std::array<link, generation_count> links{};
         std::array<model, generation_count> models{};
+        std::array<std::shared_ptr<scene_channel>, generation_count> scenes{};
         std::atomic<uint64_t> session{0};
         std::atomic<uint64_t> content{0};
         std::atomic<uint64_t> operation_fence{0};

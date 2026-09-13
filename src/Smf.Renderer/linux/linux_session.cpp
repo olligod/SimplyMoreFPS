@@ -2,6 +2,8 @@
 #include "camera_bridge.h"
 #include "camera_tuple.h"
 #include "capture_diagnostic.h"
+#include "scene_frame.h"
+#include "scene_budget.h"
 #include "clock.h"
 #include "failure_diagnostic.h"
 #include "glx_source_router.h"
@@ -54,6 +56,8 @@ namespace linux_session {
             pre_gui_packet pre{};
             frame_packet frame{};
             native_frame_packet marker{};
+            smf_scene::snapshot scene{};
+            bool has_scene = false;
         };
 
         struct slot {
@@ -72,6 +76,9 @@ namespace linux_session {
             GLsync consumer = nullptr;
             bool complete = false;
             bool abandoned = false;
+            smf_scene::snapshot scene{};
+            std::array<GLuint, smf_scene::maximum_images> scene_resources{};
+            bool has_scene = false;
         };
 
         struct generation_state {
@@ -79,6 +86,12 @@ namespace linux_session {
             camera_model model{};
             cache_packet cache{};
             bool retiring = false;
+        };
+
+        struct storage_plan {
+            texture_storage textures[4]{};
+            texture_storage scene_textures[smf_scene::maximum_images]{};
+            uint64_t bytes = 0;
         };
 
         struct draw_packet {
@@ -93,6 +106,9 @@ namespace linux_session {
             pose_packet pose{};
             affine captured{};
             camera_model model{};
+            smf_scene::snapshot scene{};
+            std::array<GLuint, smf_scene::maximum_images> scene_resources{};
+            bool has_scene = false;
         };
 
         status_packet empty_status() {
@@ -165,6 +181,7 @@ namespace linux_session {
         uint64_t hidden_floor = 0;
         uint64_t resize_floor = 0;
         affine last_displayed_affine{};
+        smf_scene::view last_displayed_scene{};
         command_packet deferred_command{};
         bool has_deferred = false;
 
@@ -410,6 +427,19 @@ namespace linux_session {
             }
         }
 
+        void trim_scene_storage(slot_storage& storage, uint32_t count) {
+            for (uint32_t i = count; i < smf_scene::maximum_images; ++i) {
+                auto& texture = storage.scene_textures[i];
+                if (texture.name) {
+                    glDeleteTextures(1, &texture.name);
+                    source.performance[deleted_names]++;
+                    source.performance[live_names]--;
+                }
+                texture = {};
+                storage.scene_images[i] = {};
+            }
+        }
+
         void delete_storage(slot_storage& storage) {
             for (auto& texture : storage.textures) {
                 if (!texture.name) continue;
@@ -417,6 +447,7 @@ namespace linux_session {
                 source.performance[deleted_names]++;
                 source.performance[live_names]--;
             }
+            trim_scene_storage(storage, 0);
             storage = {};
         }
 
@@ -426,7 +457,93 @@ namespace linux_session {
             s.storage = retained;
         }
 
-        bool copy_layer(slot& s, storage_layer which, GLuint texture, layer& out, uint32_t width, uint32_t height, bool original = false) {
+        uint64_t source_storage_bytes() {
+            uint64_t bytes = 0;
+            for (const auto& item : slots) bytes += item.storage.allocated_bytes();
+            return bytes;
+        }
+
+        bool has_scene_storage() {
+            for (const auto& item : slots) if (item.storage.has_scene()) return true;
+            return false;
+        }
+
+        storage_admission make_storage_room(slot& owner, uint64_t required, bool retain_visible) {
+            const uint64_t visible_bytes = retain_visible && visible >= 0 && &slots[visible] != &owner &&
+                slots[visible].lease.state == lease_worker_owned ? slots[visible].storage.allocated_bytes() : 0;
+            auto result = scene_capacity(source_storage_bytes(), owner.storage.allocated_bytes(), required, visible_bytes);
+            if (result != storage_admission::busy) return result;
+            for (bool obsolete : {true, false}) {
+                for (auto& item : slots) {
+                    if (&item == &owner || item.lease.state != lease_free || !item.storage.has_names()) continue;
+                    const bool stale = !item.storage.compatible(owner.storage.generation, owner.storage.content,
+                        owner.storage.width, owner.storage.height);
+                    if (stale != obsolete) continue;
+                    delete_storage(item.storage);
+                    result = scene_capacity(source_storage_bytes(), owner.storage.allocated_bytes(), required, visible_bytes);
+                    if (result != storage_admission::busy) return result;
+                }
+            }
+            return storage_admission::busy;
+        }
+
+        bool read_storage_plan(const slot& s, const frame_packet& f, const smf_scene::snapshot* scene, storage_plan& plan) {
+            const auto describe = [&](texture_storage& target, uint32_t width, uint32_t height, uint32_t format) {
+                if (!width || !height || width > 16384 || height > 16384) return false;
+                target.width = width;
+                target.height = height;
+                target.format = format;
+                target.bytes = uint64_t(width) * height * (format == GL_RGBA16F ? 8 : 4);
+                plan.bytes += target.bytes;
+                return true;
+            };
+            if (!describe(plan.textures[base_storage], s.base.width, s.base.height, GL_RGBA8) ||
+                !describe(plan.textures[hud_storage], s.base.width, s.base.height, GL_RGBA8)) return false;
+            if ((f.flags & 1) && !describe(plan.textures[world_storage], s.base.width, s.base.height, GL_RGBA8)) return false;
+            if (!scene && f.cache.texture && !describe(plan.textures[cache_storage], f.cache.width, f.cache.height, GL_RGBA8))
+                return false;
+            if (!scene) return true;
+            gl_state before;
+            bool okay = true;
+            for (uint32_t i = 0; i < scene->frame.image_count; ++i) {
+                const auto& image = scene->images[i];
+                const auto& retained = s.storage.scene_textures[i];
+                GLint format = retained.format;
+                if (!retained.name || std::memcmp(&image, &s.storage.scene_images[i], sizeof(image))) {
+                    if (!glIsTexture(GLuint(image.texture))) { okay = false; break; }
+                    glBindTexture(GL_TEXTURE_2D, GLuint(image.texture));
+                    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT, &format);
+                }
+                const bool depth = (image.flags & smf_scene::depth_image) != 0;
+                if (depth ? format != GL_R32F : format != GL_RGBA16F && format != GL_RGBA8 && format != GL_SRGB8_ALPHA8) {
+                    okay = false;
+                    break;
+                }
+                if (!describe(plan.scene_textures[i], image.width, image.height,
+                    format == GL_SRGB8_ALPHA8 ? GL_RGBA8 : GLenum(format))) { okay = false; break; }
+            }
+            return before.restore() && okay;
+        }
+
+        void retain_planned_storage(slot_storage& storage, const storage_plan& plan) {
+            const auto retain = [&](texture_storage& allocated, const texture_storage& wanted) {
+                if (!allocated.name || (wanted.bytes && allocated.width == wanted.width &&
+                    allocated.height == wanted.height && allocated.format == wanted.format)) return;
+                glDeleteTextures(1, &allocated.name);
+                source.performance[deleted_names]++;
+                source.performance[live_names]--;
+                allocated = {};
+            };
+            for (uint32_t i = 0; i < 4; ++i) retain(storage.textures[i], plan.textures[i]);
+            if (!storage.textures[cache_storage].name) storage.cache_valid = false;
+            for (uint32_t i = 0; i < smf_scene::maximum_images; ++i) {
+                retain(storage.scene_textures[i], plan.scene_textures[i]);
+                if (!storage.scene_textures[i].name) storage.scene_images[i] = {};
+            }
+        }
+
+        bool copy_layer(slot& s, storage_layer which, GLuint texture, layer& out, uint32_t width, uint32_t height,
+                        bool original = false) {
             auto& storage = s.storage.textures[which];
             if (storage.name && (storage.width != width || storage.height != height)) {
                 // The slot is back with its source owner, so no worker samples this storage now.
@@ -439,9 +556,45 @@ namespace linux_session {
 
             storage.width = width;
             storage.height = height;
-            bool copied = source.copy(texture, storage.name, width, height, original);
+            storage.format = GL_RGBA8;
+            storage.bytes = uint64_t(width) * height * 4;
+            bool copied = source.copy(texture, storage.name, width, height, original, GL_RGBA8);
             if (copied) out.texture = storage.name;
             return copied;
+        }
+
+        bool copy_scene(slot& s, const smf_scene::snapshot& scene, const storage_plan& plan) {
+            s.has_scene = false;
+            trim_scene_storage(s.storage, scene.frame.image_count);
+            for (auto& other : slots) {
+                if (other.lease.state == lease_free && other.storage.compatible(s.generation, s.content, s.base.width, s.base.height))
+                    trim_scene_storage(other.storage, scene.frame.image_count);
+            }
+            for (uint32_t i = 0; i < scene.frame.image_count; ++i) {
+                const auto& image = scene.images[i];
+                auto& storage = s.storage.scene_textures[i];
+                auto& previous = s.storage.scene_images[i];
+                if (!storage.name || std::memcmp(&image, &previous, sizeof(image))) {
+                    const GLenum owned_format = plan.scene_textures[i].format;
+                    if (storage.name && (storage.width != image.width || storage.height != image.height || storage.format != owned_format)) {
+                        glDeleteTextures(1, &storage.name);
+                        source.performance[deleted_names]++;
+                        source.performance[live_names]--;
+                        storage = {};
+                    }
+                    previous = {};
+                    storage.width = image.width;
+                    storage.height = image.height;
+                    storage.format = owned_format;
+                    storage.bytes = plan.scene_textures[i].bytes;
+                    if (!source.copy(GLuint(image.texture), storage.name, image.width, image.height, false, owned_format)) return false;
+                    previous = image;
+                }
+                s.scene_resources[i] = storage.name;
+            }
+            s.scene = scene;
+            s.has_scene = true;
+            return true;
         }
 
         bool signaled(GLsync sync) {
@@ -530,6 +683,19 @@ namespace linux_session {
             return best;
         }
 
+        void drain_worker_slots() {
+            for (int i = 0; i < 6; i++) {
+                auto& s = slots[i];
+                if (i == visible || s.lease.state != lease_worker_owned) continue;
+                auto* g = find_generation(s.generation);
+                const bool warmup = pending.serial && pending.operation == op_prepare &&
+                    s.generation == pending.generation && s.content == pending.content_revision &&
+                    s.content == state.content_fence && s.frame == last_native.key.frame;
+                if (!g || g->retiring || s.abandoned || s.content != state.content_fence ||
+                    (!warmup && i != best_slot(s.generation))) hand_back(s);
+            }
+        }
+
         bool pin(int index, draw_packet& out) {
             if (index < 0 || slots[index].lease.state != lease_worker_owned) return false;
 
@@ -538,6 +704,9 @@ namespace linux_session {
             if (!g) return false;
 
             out = {index, s.generation, s.content, s.frame, s.base, s.world, s.hud, s.cache, s.pose, s.captured, g->model};
+            out.scene = s.scene;
+            out.scene_resources = s.scene_resources;
+            out.has_scene = s.has_scene;
             return true;
         }
 
@@ -572,10 +741,13 @@ namespace linux_session {
             facts[29] = geometry_facts[6];
         }
 
-        draw_outcome render_pinned(const draw_packet& s, geometry_ticket ticket, bool camera, bool frozen, affine& desired, uint64_t* d) {
+        draw_outcome render_pinned(const draw_packet& s, geometry_ticket ticket, bool camera, bool frozen,
+                                  affine& desired, smf_scene::view& scene_view, uint64_t* d) {
             d[10] = camera;
             d[11] = frozen;
             desired = frozen ? last_displayed_affine : s.captured;
+            double scene_x = s.pose.x;
+            double scene_z = s.pose.z;
             const auto overlay_snapshot = worker.overlay.latch();
 
             double x = 0;
@@ -606,7 +778,11 @@ namespace linux_session {
                             d[1] = target.epoch != s.pose.camera_epoch ? 2 : 3;
                             return draw_outcome::stale_camera;
                         }
-                        if (!s.model.root(target.x, target.z, target.projection_half_height, desired)) {
+                        const bool projected = s.has_scene
+                            ? scene_projection(s.pose, s.model, s.captured, target.x, target.z,
+                                target.projection_half_height, desired, scene_x, scene_z)
+                            : s.model.root(target.x, target.z, target.projection_half_height, desired);
+                        if (!projected) {
                             d[1] = 4;
                             return draw_outcome::failed;
                         }
@@ -623,8 +799,18 @@ namespace linux_session {
             if (frozen || !s.world.texture) overlay_geometry.visible = false;
 
             d[1] = 5;
+            smf_scene::frame scene_frame{&s.scene, s.scene_resources.data()};
+            scene_view = {};
+            scene_view.width = frozen ? s.base.width : ticket.width;
+            scene_view.height = frozen ? s.base.height : ticket.height;
+            const double scene_affine[] = {desired.a, desired.b, desired.c, desired.d, desired.e, desired.f};
+            std::copy(std::begin(scene_affine), std::end(scene_affine), scene_view.map_affine);
+            scene_view.camera_x = scene_x;
+            scene_view.camera_z = scene_z;
+            if (frozen && s.has_scene) scene_view = last_displayed_scene;
             draw_outcome result = worker.draw(ticket, s.base, s.world, s.hud, s.cache, desired,
-                                              frozen ? s.base.width : 0, frozen ? s.base.height : 0, overlay_geometry);
+                                              frozen ? s.base.width : 0, frozen ? s.base.height : 0, overlay_geometry,
+                                              s.has_scene ? &scene_frame : nullptr, s.has_scene ? &scene_view : nullptr);
             for (unsigned i = 0; i < 8; i++) d[50 + i] = worker.draw_facts[i];
             if (result == draw_outcome::drawn) d[1] = 6;
             return result;
@@ -906,16 +1092,18 @@ namespace linux_session {
                             facts[25] = worker.width;
                             facts[26] = worker.height;
                             affine desired;
+                            smf_scene::view scene_view{};
                             draw_outcome outcome = draw_outcome::failed;
 
                             if (geometry == geometry_outcome::ready) {
-                                outcome = render_pinned(packet, ticket, false, false, desired, facts);
+                                outcome = render_pinned(packet, ticket, false, false, desired, scene_view, facts);
                             } else if (geometry == geometry_outcome::stale) {
                                 outcome = draw_outcome::stale_geometry;
                             }
 
                             bool drawn = outcome == draw_outcome::drawn;
                             bool submitted = drawn && !inbox.activation.cancelled() && activation_presentation.swap_and_arm(worker, key);
+                            if (submitted && packet.has_scene && !worker.scene_submitted()) submitted = false;
                             if (drawn && !submitted) facts[1] = 7;
 
                             lock.lock();
@@ -929,6 +1117,7 @@ namespace linux_session {
                                 if (visible >= 0 && visible != index) hand_back(slots[visible]);
                                 visible = index;
                                 last_displayed_affine = desired;
+                                if (packet.has_scene) last_displayed_scene = scene_view;
                             } else if (failed_activation_submission(outcome, submitted, inbox.activation.cancelled())) {
                                 FAIL_DRAW(gpu_fault, facts);
                             }
@@ -962,10 +1151,11 @@ namespace linux_session {
                         facts[25] = worker.width;
                         facts[26] = worker.height;
                         affine desired;
+                        smf_scene::view scene_view{};
                         draw_outcome outcome = draw_outcome::failed;
 
                         if (geometry == geometry_outcome::ready) {
-                            outcome = render_pinned(packet, ticket, !frozen && camera_allowed, frozen, desired, facts);
+                            outcome = render_pinned(packet, ticket, !frozen && camera_allowed, frozen, desired, scene_view, facts);
                         } else if (geometry == geometry_outcome::stale) {
                             outcome = draw_outcome::stale_geometry;
                         }
@@ -974,8 +1164,13 @@ namespace linux_session {
                         bool swapped = drawn && !inbox.activation.cancelled();
                         if (swapped) {
                             glXSwapBuffers(worker.display, xid);
-                            camera_bridge::worker_committed(0);
-                        } else if (outcome == draw_outcome::stale_camera || outcome == draw_outcome::stale_geometry) {
+                            if (packet.has_scene && !worker.scene_submitted()) {
+                                swapped = false;
+                                outcome = draw_outcome::failed;
+                            }
+                            camera_bridge::worker_committed(swapped ? 0 : gpu_fault);
+                        } else if (outcome == draw_outcome::stale_camera || outcome == draw_outcome::stale_geometry ||
+                            outcome == draw_outcome::deferred) {
                             // The camera or window moved on after pinning: keep the shown frame and
                             // do not acknowledge a pose that was never drawn.
                             camera_bridge::worker_committed(S_FALSE);
@@ -993,20 +1188,14 @@ namespace linux_session {
                             if (visible >= 0 && visible != latest) hand_back(slots[visible]);
                             visible = latest;
                             last_displayed_affine = desired;
+                            if (packet.has_scene) last_displayed_scene = scene_view;
                         } else if (outcome == draw_outcome::failed) {
                             FAIL_DRAW(gpu_fault, facts);
                         }
                     }
                 }
 
-                if (worker_bound) {
-                    for (int i = 0; i < 6; i++) {
-                        if (i == visible || slots[i].lease.state != lease_worker_owned) continue;
-                        auto* g = find_generation(slots[i].generation);
-                        bool warmup = pending.serial && pending.operation == op_prepare && slots[i].frame == last_native.key.frame;
-                        if (!warmup && (!g || g->retiring || slots[i].abandoned || i != best_slot(slots[i].generation))) hand_back(slots[i]);
-                    }
-                }
+                if (worker_bound) drain_worker_slots();
 
                 if (pending.serial && pending.operation == op_restore_routing && !activation_presentation.pending() &&
                     handoff.phase() < handoff_phase::worker_released) {
@@ -1192,6 +1381,29 @@ namespace linux_session {
             s->storage.content = p.content_revision;
             s->storage.width = p.width;
             s->storage.height = p.height;
+            if ((p.flags & pre_gui_scene) || has_scene_storage()) {
+                const uint64_t base_bytes = uint64_t(p.width) * p.height * 4;
+                const auto& retained = s->storage.textures[base_storage];
+                const uint64_t required = s->storage.allocated_bytes() - (retained.name ? retained.bytes : 0) + base_bytes;
+                auto admission = make_storage_room(*s, required, false);
+                if (admission != storage_admission::ready && s->storage.has_names()) {
+                    delete_storage(s->storage);
+                    s->storage.generation = p.generation;
+                    s->storage.content = p.content_revision;
+                    s->storage.width = p.width;
+                    s->storage.height = p.height;
+                    admission = make_storage_room(*s, base_bytes, false);
+                }
+                if (admission != storage_admission::ready) {
+                    if (admission == storage_admission::unsupported) {
+                        capture_failure(capture_scene_capacity, unsupported, nullptr, &p);
+                        FAIL(unsupported);
+                    } else {
+                        state.dropped_frames++;
+                    }
+                    return;
+                }
+            }
             s->lease.begin();
             s->generation = p.generation;
             s->content = p.content_revision;
@@ -1219,7 +1431,7 @@ namespace linux_session {
             }
         }
 
-        void finish_frame(const frame_packet& f) {
+        void finish_frame(const frame_packet& f, const smf_scene::snapshot* scene) {
             if (state.result < 0 || routing_fence || !source_ready || source_released) return;
             auto* g = find_generation(f.generation);
             if (!g || g->retiring || f.content_revision != state.content_fence || !source.own()) return;
@@ -1242,12 +1454,42 @@ namespace linux_session {
                 return value;
             };
 
+            storage_plan plan{};
+            if (scene || has_scene_storage()) {
+                if (!read_storage_plan(*s, f, scene, plan)) {
+                    s->abandoned = true;
+                    capture_failure(capture_scene_capacity, malformed, &f);
+                    FAIL(malformed);
+                    return;
+                }
+                const auto admission = make_storage_room(*s, plan.bytes, true);
+                if (admission != storage_admission::ready) {
+                    // Keep the pre-GUI fence: this partial slot must still return to its source owner.
+                    s->abandoned = true;
+                    if (admission == storage_admission::unsupported) {
+                        capture_failure(capture_scene_capacity, unsupported, &f);
+                        FAIL(unsupported);
+                    } else {
+                        state.dropped_frames++;
+                    }
+                    return;
+                }
+                retain_planned_storage(s->storage, plan);
+            }
+
             // The frame fence issued below replaces the pre-GUI fence on this same context
             // and covers every source texture read in the bundle.
             glDeleteSync(s->producer);
             s->producer = nullptr;
 
-            bool okay = check(valid_cache(f, g->cache), capture_cache_descriptor);
+            cache_packet empty_cache{};
+            if (!scene) {
+                trim_scene_storage(s->storage, 0);
+                for (auto& other : slots) {
+                    if (other.lease.state == lease_free) trim_scene_storage(other.storage, 0);
+                }
+            }
+            bool okay = check(scene ? !std::memcmp(&f.cache, &empty_cache, sizeof(empty_cache)) : valid_cache(f, g->cache), capture_cache_descriptor);
             s->hud.width = s->base.width;
             s->hud.height = s->base.height;
             s->hud.flip = (f.flags & 16) != 0;
@@ -1262,13 +1504,16 @@ namespace linux_session {
                 okay = okay && check(valid_world_dispatch(f), capture_world_dispatch);
                 okay = okay && check(projection(f.pose, s->base.width, s->base.height, s->captured), capture_world_projection);
                 okay = okay && check(g->model.accept(f.pose, s->captured, s->base.width, s->base.height), capture_world_model);
-                okay = okay && check(g->model.root(f.pose.root_x, f.pose.root_z, f.pose.orthographic_size, s->captured), capture_world_root);
+                if (!scene)
+                    okay = okay && check(g->model.root(f.pose.root_x, f.pose.root_z, f.pose.orthographic_size, s->captured), capture_world_root);
 
                 s->world.source = s->captured;
                 s->base.source = s->captured;
                 if (okay) {
                     okay = check(copy_layer(*s, world_storage, uint32_t(f.world_texture), s->world, s->world.width, s->world.height), capture_world_copy);
                 }
+
+                if (scene && okay) okay = check(copy_scene(*s, *scene, plan), capture_cache_copy);
 
                 if (f.cache.texture) {
                     s->cache.width = f.cache.width;
@@ -1430,7 +1675,7 @@ namespace linux_session {
             if (packet.kind == 1) {
                 pre_gui(packet.pre);
             } else if (packet.kind == 2) {
-                finish_frame(packet.frame);
+                finish_frame(packet.frame, packet.has_scene ? &packet.scene : nullptr);
             } else {
                 native_marker(packet.marker);
             }
@@ -1443,7 +1688,7 @@ namespace linux_session {
             *ticket = nullptr;
             *token = 0;
 
-            if (!on_main_thread() || !p || bytes != sizeof(*p) || p->size != bytes || p->version != (kind == 2 ? 3u : 1u) ||
+            if (!on_main_thread() || !p || bytes != sizeof(*p) || p->size != bytes || p->version != (kind == 2 ? 4u : 1u) ||
                 !p->session || !p->source_frame) {
                 return malformed;
             }
@@ -1455,6 +1700,7 @@ namespace linux_session {
             d.generation = p->generation;
 
             if constexpr (std::is_same_v<Packet, pre_gui_packet>) {
+                if (!valid_pre_gui_flags(*p)) return malformed;
                 d.pre = *p;
             } else if constexpr (std::is_same_v<Packet, frame_packet>) {
                 if (!p->hud_texture || p->hud_texture > UINT32_MAX || p->world_texture > UINT32_MAX || p->cache.texture > UINT32_MAX ||
@@ -1462,6 +1708,14 @@ namespace linux_session {
                     return malformed;
                 }
                 d.frame = *p;
+                if (p->scene_description) {
+                    const auto result = read_scene_frame(*p, d.scene);
+                    if (result != scene_admission::ready)
+                        return result == scene_admission::unsupported ? unsupported : malformed;
+                    d.has_scene = true;
+                    d.frame.scene_description = 0;
+                    d.frame.cache = {};
+                }
             } else {
                 d.marker = *p;
             }

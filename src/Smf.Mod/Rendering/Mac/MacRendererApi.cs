@@ -354,8 +354,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
 
         var packet = new FramePacket
         {
-            Size = 416,
-            Version = 3,
+            Size = 424,
+            Version = 4,
             Session = value.Key.Session,
             Content = value.Key.Content,
             Generation = value.Key.Generation,
@@ -377,10 +377,11 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             CoverageC = value.CoverageC,
             CoverageD = value.CoverageD,
             CoverageE = value.CoverageE,
-            CoverageF = value.CoverageF
+            CoverageF = value.CoverageF,
+            SceneDescription = value.SceneDescription
         };
 
-        int result = frame(ref packet, 416, out IntPtr ticket, out int token);
+        int result = frame(ref packet, 424, out IntPtr ticket, out int token);
         dispatch = new NativeDispatch { Ticket = ticket, Token = token };
         return ReportCaptureResult(result);
     }
@@ -593,7 +594,7 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
         AssertSize<CameraPose>(264);
         AssertSize<CommandPacket>(88);
         AssertSize<PreGuiPacket>(64);
-        AssertSize<FramePacket>(416);
+        AssertSize<FramePacket>(424);
         AssertSize<NativeFramePacket>(64);
         AssertSize<AckPacket>(80);
         AssertSize<GenerationStatus>(128);
@@ -604,7 +605,8 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
             || (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.Pose)) != 72
             || (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageTexture)) != 336
             || (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageSerial)) != 344
-            || (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageA)) != 368)
+            || (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageA)) != 368
+            || (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.SceneDescription)) != 416)
             throw new InvalidOperationException("Session ABI field offsets differ from the native header.");
     }
 
@@ -644,6 +646,7 @@ public sealed partial class MacRendererApi : INativeSession, IRetainedNativeSess
         public ulong CoverageTexture, CoverageSerial;
         public uint CoverageWidth, CoverageHeight, CoverageFlags, CoverageReserved;
         public double CoverageA, CoverageB, CoverageC, CoverageD, CoverageE, CoverageF;
+        public ulong SceneDescription;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 8)]

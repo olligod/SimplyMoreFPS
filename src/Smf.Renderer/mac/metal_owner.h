@@ -9,6 +9,8 @@
 #include "activation.h"
 #include "copy_disposition.h"
 #include "../common/selection_overlay.h"
+#include "../common/scene_snapshot.h"
+#include "scene_compositor.h"
 
 namespace mac {
 
@@ -45,6 +47,34 @@ namespace mac {
     struct copy_pair {
         __strong id<MTLTexture> source = nil;
         image_layer* target = nullptr;
+        bool scene_format = false;
+    };
+
+    struct captured_scene {
+        smf_scene::snapshot packet{};
+        std::array<image_layer, smf_scene::maximum_images> images{};
+        std::array<std::shared_ptr<source_completion>, smf_scene::maximum_images> dependencies{};
+
+        bool completed() const {
+            for (uint32_t i = 0; i < packet.frame.image_count; ++i) {
+                if (!dependencies[i] || !dependencies[i]->completed()) return false;
+            }
+            return true;
+        }
+
+        bool succeeded() const {
+            for (uint32_t i = 0; i < packet.frame.image_count; ++i) {
+                if (!dependencies[i] || !dependencies[i]->succeeded()) return false;
+            }
+            return true;
+        }
+
+        bool retired_without_failure() const {
+            for (uint32_t i = 0; i < packet.frame.image_count; ++i) {
+                if (!dependencies[i] || !dependencies[i]->retired_without_failure()) return false;
+            }
+            return true;
+        }
     };
 
     struct resolved_source_target {
@@ -58,6 +88,8 @@ namespace mac {
     // means the submission is not ordered yet and nothing was encoded.
     int encode_copies(IUnityGraphicsMetalV2*, copy_pair*, size_t count, std::shared_ptr<source_completion>&, id<MTLCommandBuffer> expected_command = nil);
     bool texture_valid(id<MTLTexture>, id<MTLDevice>, uint32_t width, uint32_t height, uint32_t expected_format = 0);
+    bool scene_texture_valid(id<MTLTexture>, id<MTLDevice>, const smf_scene::image&);
+    uint32_t texture_bytes(id<MTLTexture>);
 
     struct presentation_count {
         const uint64_t session, generation;
@@ -88,6 +120,7 @@ namespace mac {
         uint32_t number = 0, width = 0, height = 0, image_width = 0, image_height = 0;
         bool attached = false, visible = false;
         std::atomic<uint64_t> transaction_completed{0};
+        std::atomic<uint64_t> scene_interval_ns{16666667};
         uint64_t transaction_issued = 0;
 
         int create(uint64_t window_address);
@@ -99,6 +132,8 @@ namespace mac {
 
     struct metal_worker {
         selection::worker selection;
+        scene_compositor scene;
+        std::atomic<bool> scene_allocated{false};
         __strong CAMetalLayer* layer = nil;
         __strong id<MTLDevice> device = nil;
         __strong id<MTLCommandQueue> queue = nil;
@@ -108,7 +143,8 @@ namespace mac {
         int create(CAMetalLayer*);
         int draw(const image_layer& base, const image_layer& world, const image_layer& hud, const image_layer& cache,
             const affine& desired, std::shared_ptr<draw_completion>, bool offscreen = false,
-            const selection::geometry& selection_geometry = {});
+            const selection::geometry& selection_geometry = {}, const captured_scene* captured = nullptr,
+            const scene_view& scene_desired = {});
         void release(); // worker only, after its last GPU completion
     };
 

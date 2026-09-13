@@ -45,11 +45,13 @@ int main() {
     check(!copy_region_fits(UINT32_MAX, 2048, UINT32_MAX, 0, 1, 1), "copy source span cannot wrap");
     check(!copy_region_fits(2048, 2048, 0, 0, 0, 1), "empty source rectangle rejected");
 
-    check(frame_layout_matches(416, 416, 3), "frame version 3 at 416 bytes accepted");
+    check(frame_layout_matches(424, 424, 4), "frame version 4 at 424 bytes accepted");
     check(!frame_layout_matches(336, 336, 1), "obsolete 336 byte frame rejected");
     check(!frame_layout_matches(368, 368, 2), "obsolete 368 byte frame rejected");
     check(!frame_layout_matches(416, 416, 2), "old version cannot reinterpret the cache tail");
     check(!frame_layout_matches(416, 368, 3), "caller size mismatch rejected");
+    check(!frame_layout_matches(416, 416, 3), "frame without scene description rejected");
+    check(!frame_layout_matches(424, 424, 3), "old version cannot reinterpret scene description");
 
     session_frame frame{};
     check(cache_valid(frame), "no-map cache descriptor must be all zero");
@@ -161,6 +163,18 @@ int main() {
     check(!accept_content(8, 5, false, old, 8, 5, 31), "new content cannot borrow the old generation");
     check(!accept_content(9, 4, false, old, 8, 4, 31), "late old session rejected");
     check(!accept_content(8, 4, true, old, 8, 4, 31), "restore seals captures before native routing");
+
+    session_command activation{};
+    activation.operation = op_activate;
+    activation.content_revision = 8;
+    check(!content_superseded(activation, 0, 8), "current activation may begin");
+    check(content_superseded(activation, 0, 9), "obsolete activation is rejected before visibility changes");
+    check(!content_superseded(activation, 1, 9), "committed activation survives a later content fence");
+    check(!content_superseded(activation, 2, 9), "activation completion reports the generation that became live");
+    activation.operation = op_prepare_replacement;
+    check(content_superseded(activation, 1, 9), "obsolete hidden preparation still supersedes");
+    activation.operation = op_restore_native;
+    check(!content_superseded(activation, 0, 9), "content cannot supersede native restoration");
 
     auto& next = s.generations[1];
     next.generation = 32;

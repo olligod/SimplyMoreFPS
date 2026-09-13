@@ -25,20 +25,23 @@ namespace mac {
 
     struct texture_budget {
         static constexpr uint64_t limit = 512ull * 1024 * 1024;
+        static constexpr uint64_t scene_limit = 3072ull * 1024 * 1024;
+        static constexpr uint64_t scene_packet_limit = 1024ull * 1024 * 1024;
+        static constexpr uint64_t scene_display_reserve = 1024ull * 1024 * 1024;
 
         struct item {
             uint64_t identity = 0, bytes = 0;
         };
 
-        std::array<item, 26> items{};
+        std::array<item, 256> items{};
         size_t count = 0;
         uint64_t bytes = 0;
         bool valid = true;
 
-        void add(uint64_t identity, uint32_t w, uint32_t h) {
+        void add(uint64_t identity, uint32_t w, uint32_t h, uint32_t bytes_per_pixel = 4) {
             if (!identity) return;
 
-            uint64_t size = uint64_t(w) * h * 4;
+            uint64_t size = uint64_t(w) * h * bytes_per_pixel;
             for (size_t i = 0; i < count; ++i) {
                 if (items[i].identity == identity) {
                     if (items[i].bytes != size) valid = false;
@@ -55,8 +58,12 @@ namespace mac {
             bytes += size;
         }
 
-        bool allows(uint64_t extra, uint64_t display_reserve) const {
-            return valid && bytes <= limit && display_reserve <= limit - bytes && extra <= limit - bytes - display_reserve;
+        bool allows(uint64_t extra, uint64_t display_reserve, uint64_t capacity = limit) const {
+            return valid && bytes <= capacity && display_reserve <= capacity - bytes && extra <= capacity - bytes - display_reserve;
+        }
+
+        static bool allows_scene_packet(uint64_t bytes) {
+            return bytes <= scene_packet_limit;
         }
     };
 

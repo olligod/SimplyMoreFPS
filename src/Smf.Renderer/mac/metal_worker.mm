@@ -86,7 +86,8 @@ fragment float4 fragment_main(vertex_out v [[stage_in]], constant uniforms& u [[
     }
 
     int metal_worker::draw(const image_layer& base, const image_layer& world, const image_layer& hud, const image_layer& cache,
-        const affine& desired, std::shared_ptr<draw_completion> result, bool offscreen, const selection::geometry& selection_geometry) {
+        const affine& desired, std::shared_ptr<draw_completion> result, bool offscreen, const selection::geometry& selection_geometry,
+        const captured_scene* captured, const scene_view& scene_desired) {
         @autoreleasepool {
             @try {
                 if (!queue || !base.texture || !hud.texture || !result) return E_INVALIDARG;
@@ -111,6 +112,27 @@ fragment float4 fragment_main(vertex_out v [[stage_in]], constant uniforms& u [[
                 if (!target || target.width != base.width || target.height != base.height || target.device != device || target.pixelFormat != layer.pixelFormat) return 1;
                 id<MTLCommandBuffer> cb = [queue commandBuffer];
                 if (!cb) return E_FAIL;
+                image_layer composed{};
+                if (captured) {
+                    int status = scene.initialize(device);
+                    if (status != 0) return status;
+                    scene_allocated.store(true, std::memory_order_release);
+                    std::array<id<MTLTexture>, smf_scene::maximum_images> resources{};
+                    for (uint32_t i = 0; i < captured->packet.frame.image_count; ++i) {
+                        resources[i] = captured->images[i].texture;
+                    }
+                    scene_frame frame{&captured->packet.frame, captured->packet.images.data(), captured->packet.layers.data(),
+                        captured->packet.effects.data(), resources.data()};
+                    status = scene.draw(cb, frame, scene_desired);
+                    if (status != 0) return status;
+                    composed.texture = scene.texture();
+                    composed.width = base.width;
+                    composed.height = base.height;
+                } else if (scene_allocated.load(std::memory_order_relaxed)) {
+                    // The session starts another draw only after the prior GPU completion.
+                    scene.release();
+                    scene_allocated.store(false, std::memory_order_release);
+                }
                 auto pass = [MTLRenderPassDescriptor renderPassDescriptor];
                 pass.colorAttachments[0].texture = target;
                 pass.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -124,7 +146,7 @@ fragment float4 fragment_main(vertex_out v [[stage_in]], constant uniforms& u [[
                     if (!l.texture) return;
 
                     uniforms u{{float(map.a), float(map.b), float(map.c), 0}, {float(map.d), float(map.e), float(map.f), 0},
-                        {float(l.width), float(l.height)}, uint32_t(l.flip), uint32_t(force_opaque)};
+                        {float(l.width), float(l.height)}, uint32_t(l.flip), uint32_t(force_opaque), {}};
                     [encoder setRenderPipelineState:force_opaque ? opaque : premult];
                     [encoder setFragmentTexture:l.texture atIndex:0];
                     [encoder setFragmentSamplerState:sampler atIndex:0];
@@ -132,12 +154,16 @@ fragment float4 fragment_main(vertex_out v [[stage_in]], constant uniforms& u [[
                     [encoder drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
                 };
 
-                if (cache.texture) {
-                    draw_layer(cache, affine{0, 0, .5, 0, 0, .5}, true);
-                    draw_layer(cache, multiply_affine(cache.source, inverse), true);
-                }
+                if (captured) {
+                    draw_layer(composed, affine{}, true);
+                } else {
+                    if (cache.texture) {
+                        draw_layer(cache, affine{0, 0, .5, 0, 0, .5}, true);
+                        draw_layer(cache, multiply_affine(cache.source, inverse), true);
+                    }
 
-                draw_layer(base, world.texture ? multiply_affine(base.source, inverse) : affine{}, true);
+                    draw_layer(base, world.texture ? multiply_affine(base.source, inverse) : affine{}, true);
+                }
                 draw_layer(world, multiply_affine(world.source, inverse), false);
 
                 if (!offscreen && selection_geometry.visible) {
@@ -206,6 +232,8 @@ fragment float4 fragment_main(vertex_out v [[stage_in]], constant uniforms& u [[
     }
 
     void metal_worker::release() {
+        scene.release();
+        scene_allocated.store(false, std::memory_order_release);
         sampler = nil;
         opaque = nil;
         premult = nil;

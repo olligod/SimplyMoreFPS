@@ -113,6 +113,10 @@ int main(int argc, char** argv) {
     check(seed.version == 2 && seed.size == 88 && seed.x == 60 && seed.root_size == 24 && seed.active_pan_id == 0,
         "unacknowledged initial seed does not execute trajectory");
 
+    // Cold kernel loading may outlast the pan. Start its clock while the seed is still unacknowledged.
+    m.trajectory.start_seconds = smf_camera_bridge_now();
+    publish();
+
     sleep_ms(80);
     const auto waiting = step();
     check(waiting.sequence == seed.sequence && waiting.x == seed.x && waiting.active_pan_id == 0,

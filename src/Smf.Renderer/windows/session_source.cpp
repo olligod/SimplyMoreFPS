@@ -1,5 +1,6 @@
 #include "session_internal.h"
 #include "present_observer.h"
+#include "scene_transport.h"
 #include <algorithm>
 #include <cstring>
 
@@ -37,6 +38,7 @@ namespace session {
             ComPtr<IDCompositionEffectGroup> background_opacity;
             model model{};
             bool poisoned = false;
+            bool scene = false;
         };
 
         struct source_state {
@@ -154,17 +156,18 @@ namespace session {
         }
 
         HRESULT create_layers(generation& g, const session_generation_status& status, DXGI_FORMAT base, DXGI_FORMAT world,
-            DXGI_FORMAT hud, const session_frame& frame) {
+            DXGI_FORMAT hud, const session_frame& frame, bool scene = false) {
             g.width = status.width;
             g.height = status.height;
             g.flags = status.flags;
-            const bool cached = frame.cache.serial != 0;
+            g.scene = scene;
+            const bool cached = !scene && frame.cache.serial != 0;
 
-            HRESULT hr = make_layer(g.base, g.width, g.height, base, true);
+            HRESULT hr = scene ? S_OK : make_layer(g.base, g.width, g.height, base, true);
             if (SUCCEEDED(hr) && cached) hr = make_layer(g.cache, frame.cache.width, frame.cache.height, base, true);
             if (SUCCEEDED(hr) && cached) hr = make_layer(g.background, 1, 1, base, true);
-            if (SUCCEEDED(hr)) hr = make_layer(g.world, g.width, g.height, world, false);
-            if (SUCCEEDED(hr)) hr = make_layer(g.hud, g.width, g.height, hud, false);
+            if (SUCCEEDED(hr) && !scene) hr = make_layer(g.world, g.width, g.height, world, false);
+            if (SUCCEEDED(hr) && !scene) hr = make_layer(g.hud, g.width, g.height, hud, false);
             if (SUCCEEDED(hr)) hr = source.composition->CreateVisual(&g.map_group);
             if (SUCCEEDED(hr)) hr = source.composition->CreateVisual(&g.hud_group);
             if (SUCCEEDED(hr)) hr = source.composition->CreateVisual(&g.background_group);
@@ -177,6 +180,7 @@ namespace session {
             if (SUCCEEDED(hr)) hr = g.map_group->SetEffect(g.map_opacity.Get());
             if (SUCCEEDED(hr)) hr = g.hud_group->SetEffect(g.hud_opacity.Get());
             if (SUCCEEDED(hr)) hr = g.background_group->SetEffect(g.background_opacity.Get());
+            if (scene) return hr;
 
             if (SUCCEEDED(hr) && cached) {
                 // The 1x1 background stretches over the whole viewport.
@@ -311,7 +315,7 @@ namespace session {
             }
 
             if (SUCCEEDED(hr)) {
-                source.context->CopyResource(g.staging.Get(), backbuffer.Get());
+                if (!g.scene) source.context->CopyResource(g.staging.Get(), backbuffer.Get());
                 g.staged_frame = t.pre.source_frame;
                 status.staged_frame = t.pre.source_frame;
             }
@@ -319,10 +323,73 @@ namespace session {
             return hr;
         }
 
+        void present_scene(size_t index, generation& g, session_generation_status& status, const ticket& t) {
+            auto& s = state();
+            const auto& f = t.frame;
+            affine actual{};
+            HRESULT hr = projection(f.pose, status.width, status.height, actual) ? S_OK : E_INVALIDARG;
+            if (SUCCEEDED(hr) && !g.model.valid) {
+                g.model.nominal = actual;
+                g.model.nominal.c += actual.a * (f.pose.x - f.pose.root_x) + actual.b * (f.pose.z - f.pose.root_z);
+                g.model.nominal.f += actual.d * (f.pose.x - f.pose.root_x) + actual.e * (f.pose.z - f.pose.root_z);
+                g.model.x = f.pose.root_x;
+                g.model.z = f.pose.root_z;
+                g.model.projection_half_height = f.pose.orthographic_size;
+                g.model.epoch = f.pose.epoch;
+                g.model.revision = f.pose.model_revision;
+                g.model.camera_epoch = f.pose.camera_epoch;
+                g.model.map_id = f.pose.map_id;
+                g.model.width = status.width;
+                g.model.height = status.height;
+                g.model.valid = true;
+            }
+            affine nominal{};
+            if (SUCCEEDED(hr) && !source_model(g.model, f.pose, actual, nominal)) hr = E_INVALIDARG;
+            if (SUCCEEDED(hr) && g.map_group && !g.scene) hr = E_INVALIDARG;
+            if (SUCCEEDED(hr) && !g.map_group)
+                hr = create_layers(g, status, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, DXGI_FORMAT_UNKNOWN, f, true);
+            if (SUCCEEDED(hr) && !s.scenes[index]) {
+                for (const auto& channel : s.scenes) {
+                    if (channel) channel->trim();
+                }
+                try {
+                    auto channel = std::make_shared<scene_channel>();
+                    hr = channel->initialize(source.device.Get(), source.context.Get());
+                    if (SUCCEEDED(hr)) s.scenes[index] = std::move(channel);
+                } catch (const std::bad_alloc&) {
+                    hr = E_OUTOFMEMORY;
+                }
+            }
+            g.model.camera_epoch = f.pose.camera_epoch;
+            if (SUCCEEDED(hr)) hr = s.scenes[index]->submit(t.scene, f, g.model);
+            if (FAILED(hr)) {
+                record_failure(index, hr);
+                return;
+            }
+            if (hr == S_FALSE) {
+                ++s.status.dropped_frames;
+                return;
+            }
+            ++status.frames;
+            status.last_source_frame = f.source_frame;
+            status.staged_frame = 0;
+            g.staged_frame = 0;
+            s.models[index] = g.model;
+            wake();
+        }
+
         void present_frame(size_t index, generation& g, session_generation_status& status, const ticket& t,
             uint64_t generation_id, uint64_t content) {
             auto& s = state();
             const auto& f = t.frame;
+            if (t.has_scene) {
+                present_scene(index, g, status, t);
+                return;
+            }
+            if (g.scene) {
+                record_failure(index, E_INVALIDARG);
+                return;
+            }
 
             DXGI_FORMAT base = DXGI_FORMAT_UNKNOWN;
             DXGI_FORMAT world = DXGI_FORMAT_UNKNOWN;
@@ -445,6 +512,44 @@ namespace session {
             bool superseded = false;
         };
 
+        void pump_scenes() {
+            auto& s = state();
+            for (size_t i = 0; i < generation_count; ++i) {
+                const auto& channel = s.scenes[i];
+                if (!channel) continue;
+                const auto& generation = s.status.generations[i];
+                const bool current = is_current(s.session.load(), generation.content_revision, generation.generation);
+                HRESULT hr = channel->poll(!current);
+                if (FAILED(hr)) {
+                    record_failure(i, hr);
+                    continue;
+                }
+                const uint64_t frame = channel->presented_frame.load(std::memory_order_acquire);
+                auto& status = s.status.generations[i];
+                auto& g = source.slots[i];
+                auto& link = s.links[i];
+                if (channel->retiring.load() || g.poisoned || source.poisoned || !frame) continue;
+                if (status.state == 3) s.status.active_frame = frame;
+                if (link.serial) continue;
+                hr = g.background_group->AddVisual(channel->background.Get(), FALSE, nullptr);
+                if (SUCCEEDED(hr)) hr = g.map_group->AddVisual(channel->world.Get(), FALSE, nullptr);
+                if (SUCCEEDED(hr)) hr = g.hud_group->AddVisual(channel->hud.Get(), FALSE, nullptr);
+                if (SUCCEEDED(hr)) hr = commit(status.source_commit);
+                if (FAILED(hr)) {
+                    record_failure(i, hr);
+                    continue;
+                }
+                link.generation = status.generation;
+                link.content = status.content_revision;
+                link.background = g.background_group.Get();
+                link.map = g.map_group.Get();
+                link.hud = g.hud_group.Get();
+                link.serial = s.next_link++;
+                status.attachment = link.serial;
+                wake();
+            }
+        }
+
         // Promotes a hidden generation to ready once a commit made after its attachment completed.
         void pump_generations() {
             auto& s = state();
@@ -463,7 +568,7 @@ namespace session {
                         record_failure(i, hr);
                         continue;
                     }
-                    g.post_attach_frame = status.last_source_frame;
+                    g.post_attach_frame = s.scenes[i] ? s.scenes[i]->prepared_frame.load() : status.last_source_frame;
                     status.source_commit = g.post_attach;
                 }
 
@@ -569,7 +674,7 @@ namespace session {
                     s.status.result = hr;
                 } else {
                     op.phase = 1;
-                    op.frame = s.status.generations[index].last_source_frame;
+                    op.frame = s.scenes[index] ? s.scenes[index]->presented_frame.load() : s.status.generations[index].last_source_frame;
                     s.status.active_generation = c.generation;
                     s.status.active_frame = op.frame;
 
@@ -624,6 +729,7 @@ namespace session {
 
                 status.state = 4;
                 status.retire_requested = c.serial;
+                if (s.scenes[i]) s.scenes[i]->retiring.store(true);
                 bool queued = false;
                 for (const auto& t : s.tickets) {
                     const uint64_t ticket_generation = t.kind == ticket_kind::pre_gui ? t.pre.generation : t.frame.generation;
@@ -646,12 +752,14 @@ namespace session {
                     if (hr != S_FALSE) g.completion = 0;
                 }
 
-                if (queued || (l.serial && l.acknowledged != l.serial) || g.completion) {
+                const bool scene_pending = s.scenes[i] && (!s.scenes[i]->worker_retired.load() || !s.scenes[i]->idle());
+                if (queued || (l.serial && l.acknowledged != l.serial) || g.completion || scene_pending) {
                     all = false;
                     continue;
                 }
 
                 g = {};
+                s.scenes[i].reset();
                 s.models[i] = {};
                 l = {};
                 status.state = 5;
@@ -689,8 +797,7 @@ namespace session {
                 return true;
             }
 
-            const bool content_bound = c.operation == op_prepare_hidden || c.operation == op_prepare_replacement || c.operation == op_activate;
-            if (content_bound && c.content_revision != s.content.load()) {
+            if (content_superseded(c, op.phase, s.content.load())) {
                 result.superseded = true;
                 return true;
             }
@@ -815,6 +922,7 @@ namespace session {
         {
             lock held(s.gate);
             poll_native();
+            pump_scenes();
             pump_generations();
 
             for (auto& op : s.operations) {

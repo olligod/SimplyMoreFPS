@@ -15,11 +15,16 @@ Install .NET 10 and Python 3.12 or newer, plus the tools for your platform:
 | macOS Intel or ARM | Xcode command-line tools |
 
 On Ubuntu: `sudo apt-get install clang zlib1g-dev libx11-dev libxext-dev libxi-dev libgl-dev libglx-dev mesa-common-dev`.
+On Fedora: `sudo dnf install clang zlib-ng-compat-devel libX11-devel libXext-devel libXi-devel libglvnd-devel`.
 On macOS: `xcode-select --install`.
 
 Run `python tools/build.py --force` on Windows, or `python3 tools/build.py --force` on Linux/macOS.
 It builds the mod and your platform's native renderer into `dist/SimplyMoreFPS`.
 `--force` replaces the previous output. Add `--dev` to include the development tools.
+
+The Windows build compiles the fixed space shaders from
+`src/Smf.Renderer/windows/scene_shaders.h` and embeds their bytecode in the renderer.
+The generated header stays in the build output; edit the shader source and rebuild.
 
 The Steam install is found automatically; set `RIMWORLD_PATH` for another location.
 Add `--reference-assemblies` to build without installing the game. Those references stay out

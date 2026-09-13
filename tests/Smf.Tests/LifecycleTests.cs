@@ -12,6 +12,10 @@ internal static class LifecycleTests
         SupersededPreparation(true);
         RejectInvalidSupersession();
         RenderingSuspension();
+        ObsoleteActivation(false);
+        ObsoleteActivation(true);
+        ActivationAcknowledgementWins(false);
+        ActivationAcknowledgementWins(true);
         return checks;
     }
 
@@ -47,9 +51,9 @@ internal static class LifecycleTests
         });
     }
 
-    private static LifecycleCoordinator Start()
+    private static LifecycleCoordinator Start(bool restoreObsoleteActivation = false)
     {
-        var core = new LifecycleCoordinator();
+        var core = new LifecycleCoordinator(restoreObsoleteActivation: restoreObsoleteActivation);
         core.ChangeContent(1, false);
         core.SetEnabled(true);
         return core;
@@ -177,8 +181,16 @@ internal static class LifecycleTests
         }
 
         Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Off && core.UserEnabled, "Suspended renderer stays off after complete retirement");
+        Check(!core.Faulted && core.LastFailure == null, "Compatibility suspension does not latch a renderer failure");
         core.SetRenderingAllowed(true);
-        Check(Next(core, Operation.PrepareHiddenGeneration).Session > prepare.Session, "Free camera can start a fresh session");
+        Command resumed = Next(core, Operation.PrepareHiddenGeneration);
+        Check(resumed.Session > prepare.Session, "Compatible rendering starts a fresh session automatically");
+        core.MarkPreparationSubmitted(resumed);
+        PublishFence(core);
+        Reply(core, resumed);
+        Reply(core, Next(core, Operation.ActivateGeneration));
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Active && core.UserEnabled,
+            "Compatible rendering resumes without an explicit off/on cycle");
 
         core.ReportFailure("fixture failure");
         core.SetRenderingAllowed(false);
@@ -188,5 +200,83 @@ internal static class LifecycleTests
         core.SetEnabled(false);
         core.SetEnabled(true);
         Check(!core.Faulted, "An explicit user off/on still permits retry");
+    }
+
+    private static void ObsoleteActivation(bool replacement)
+    {
+        LifecycleCoordinator core = Start(restoreObsoleteActivation: true);
+        Command prepare = Next(core, Operation.PrepareHiddenGeneration);
+        core.MarkPreparationSubmitted(prepare);
+        PublishFence(core);
+        Reply(core, prepare);
+        Command activate = Next(core, Operation.ActivateGeneration);
+
+        if (replacement)
+        {
+            Reply(core, activate);
+            Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Active, "Initial activation completes");
+            core.ChangeContent(6, true);
+            PublishFence(core);
+            Reply(core, Next(core, Operation.InvalidateWorld));
+            prepare = Next(core, Operation.PrepareReplacementGeneration);
+            core.MarkPreparationSubmitted(prepare);
+            Reply(core, prepare);
+            activate = Next(core, Operation.ActivateGeneration);
+        }
+
+        // The native owner may have transferred routing without displaying a frame.
+        core.ChangeContent(7, true);
+        PublishFence(core);
+        core.EnterDraw();
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue, "Obsolete activation waits for draw exit");
+        core.LeaveDraw();
+        Command restore = Next(core, Operation.RestoreNativeRouting);
+        Check(restore.Serial > activate.Serial && restore.Session == activate.Session, "Restoration fences the pending activation");
+
+        long stale = core.StaleAcknowledgements;
+        Reply(core, activate);
+        Check(core.StaleAcknowledgements == stale + 1, "Late activation cannot bypass routing restoration");
+        core.ChangeContent(8, true);
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.Pending!.Value.Serial == restore.Serial,
+            "Further content changes preserve the pending restore ticket");
+        Reply(core, restore);
+        Reply(core, Next(core, Operation.AwaitNativeFrame), frame: 101);
+        Reply(core, Next(core, Operation.DetachComposite));
+        Command retire = Next(core, Operation.RetireSessionGpu);
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue, "All generations remain owned until GPU retirement completes");
+        Reply(core, retire);
+        Check(!core.AdvanceAtSafeBoundary(false).HasValue, "Main release waits for restored capture targets");
+        Reply(core, Next(core, Operation.ReleaseSessionMain));
+        Reply(core, Next(core, Operation.StopWorker));
+
+        Command restarted = Next(core, Operation.PrepareHiddenGeneration);
+        Check(restarted.Session > activate.Session && restarted.ContentRevision == 8 && restarted.HasWorld,
+            "Enabled renderer restarts with the latest content after complete retirement");
+        core.MarkPreparationSubmitted(restarted);
+        PublishFence(core);
+        Reply(core, restarted);
+        Reply(core, Next(core, Operation.ActivateGeneration));
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Active && core.UserEnabled && !core.Faulted,
+            "Obsolete activation recovers without a fault or an off/on toggle");
+    }
+
+    private static void ActivationAcknowledgementWins(bool restoreObsoleteActivation)
+    {
+        LifecycleCoordinator core = Start(restoreObsoleteActivation);
+        Command prepare = Next(core, Operation.PrepareHiddenGeneration);
+        core.MarkPreparationSubmitted(prepare);
+        PublishFence(core);
+        Reply(core, prepare);
+        Command activate = Next(core, Operation.ActivateGeneration);
+        core.ChangeContent(7, true);
+        PublishFence(core);
+
+        if (!restoreObsoleteActivation)
+            Check(!core.AdvanceAtSafeBoundary(true).HasValue, "Retained-frame platforms still wait for the activation result");
+
+        Reply(core, activate);
+        Command invalidate = Next(core, Operation.InvalidateWorld);
+        Check(invalidate.Generation == activate.Generation && invalidate.ContentRevision == 7 && !core.Faulted,
+            "A completed activation is accepted before considering obsolete-content restoration");
     }
 }

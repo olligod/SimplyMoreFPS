@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
+using RimWorld;
 using SimplyMoreFPS.API;
 using SimplyMoreFPS.Compatibility;
 using SimplyMoreFPS.Rendering.Lifecycle;
@@ -154,7 +155,7 @@ public static partial class HybridSession
             __state.Owner.EndWorld(__state, null);
         if (__exception != null && session != null)
             session.Fail(session.WorldOverlayError(__originalMethod, "draw", __exception));
-        return __exception; // keep the mod's original exception, also in nested scopes
+        return __exception; // keep the original exception, also in nested scopes
     }
 
     internal sealed partial class Session
@@ -165,6 +166,7 @@ public static partial class HybridSession
         private WorldScope worldScope;
         private long worldToken;
         private readonly Dictionary<MethodBase, string> registeredWorldDraws = new Dictionary<MethodBase, string>();
+        private readonly HashSet<MethodBase> vanillaWorldDraws = new HashSet<MethodBase>();
         private long worldOverlayRevision = -1;
         private int worldOverlaySyncFrame = -1;
         private RenderTexture originalTarget;
@@ -189,6 +191,9 @@ public static partial class HybridSession
 
         internal bool HasWorldMap => Context.HasMap != 0;
 
+        private bool CaptureMatchesContext => Capture != null && Capture.Context.Revision == Context.Revision &&
+            Capture.Context.Equals(Context);
+
         internal bool TargetsRestored
         {
             get
@@ -196,8 +201,12 @@ public static partial class HybridSession
                 if (TargetHeld || worldScope.Owner != null)
                     return false;
                 foreach (Generation generation in Generations.Values)
+                {
                     if (generation.Coverage != null && !generation.Coverage.TargetsRestored)
                         return false;
+                    if (generation.Space != null && !generation.Space.TargetsRestored)
+                        return false;
+                }
                 return true;
             }
         }
@@ -215,9 +224,26 @@ public static partial class HybridSession
                 finalizer: new HarmonyMethod(typeof(HybridSession), nameof(EndFinally)) { priority = Priority.Last });
             Patches.Patch(AccessTools.Method(typeof(GUIUtility), "EndGUIFromException", new[] { typeof(Exception) }),
                 prefix: new HarmonyMethod(typeof(HybridSession), nameof(ExceptionalEnd)));
-            Patches.Patch(AccessTools.Method(typeof(ThingOverlays), "ThingOverlaysOnGUI"),
+            MethodInfo thingOverlays = AccessTools.Method(typeof(ThingOverlays), nameof(ThingOverlays.ThingOverlaysOnGUI));
+            Patches.Patch(thingOverlays,
                 prefix: new HarmonyMethod(typeof(HybridSession), nameof(BeforeWorld)) { priority = Priority.First },
                 finalizer: new HarmonyMethod(typeof(HybridSession), nameof(AfterWorld)) { priority = Priority.Last });
+            vanillaWorldDraws.Add(thingOverlays);
+
+            MethodInfo[] mapLabels =
+            {
+                AccessTools.Method(typeof(SubstructureGrid), nameof(SubstructureGrid.DrawSubstructureCountOnGUI)),
+                AccessTools.Method(typeof(BeautyDrawer), nameof(BeautyDrawer.BeautyDrawerOnGUI)),
+                AccessTools.Method(typeof(DeepResourceGrid), "RenderMouseAttachments"),
+                AccessTools.Method(typeof(DesignationDragger), nameof(DesignationDragger.DraggerOnGUI))
+            };
+            foreach (MethodInfo method in mapLabels)
+            {
+                Patches.Patch(method,
+                    prefix: new HarmonyMethod(typeof(HybridSession), nameof(BeforeRegisteredWorld)) { priority = Priority.First },
+                    finalizer: new HarmonyMethod(typeof(HybridSession), nameof(AfterRegisteredWorld)) { priority = Priority.Last });
+                vanillaWorldDraws.Add(method);
+            }
 
             Compat.RegisterWorldOverlays();
             SyncWorldOverlays();
@@ -262,12 +288,10 @@ public static partial class HybridSession
 
             registeredWorldDraws.Clear();
 
-            MethodInfo vanilla = AccessTools.Method(typeof(ThingOverlays), "ThingOverlaysOnGUI");
-
             foreach (WorldOverlayApi.Registration entry in snapshot.Registrations)
             {
-                // The vanilla entry point already has its own dedicated patch.
-                if (entry.DrawMethod.Equals(vanilla))
+                // These vanilla entry points already have dedicated patches.
+                if (vanillaWorldDraws.Contains(entry.DrawMethod))
                     continue;
                 registeredWorldDraws.Add(entry.DrawMethod, entry.Id);
 
@@ -328,7 +352,7 @@ public static partial class HybridSession
                     attemptedFrame = Time.frameCount;
                 }
 
-                if (!CaptureRouting || Capture == null || !Capture.Context.Equals(Context))
+                if (!CaptureRouting || !CaptureMatchesContext)
                     return;
 
                 if (worldScope.Owner != null)
@@ -364,6 +388,10 @@ public static partial class HybridSession
 
         private bool BeginCapturedFrame()
         {
+            // Loading can replace the scene after Update and before its first Repaint.
+            if (!CaptureMatchesContext || !Capture.Context.Equals(Scene.ReadContext()))
+                return false;
+
             if (pendingCancellations.Count != 0)
             {
                 ++BusyFrames;
@@ -402,7 +430,13 @@ public static partial class HybridSession
                 // Coverage only attaches once it has a complete wide source; never publish an empty descriptor.
                 if (Capture.Coverage != null && !Capture.Coverage.Attach(ref bundle))
                     return false;
+                if (Capture.Space != null && !Capture.Space.Attach(ref bundle))
+                    return false;
             }
+
+            // A readiness transition can return to the same geometry under a newer content fence.
+            if (!CaptureMatchesContext || !Capture.Context.Equals(Scene.ReadContext()))
+                return false;
 
             if (!Accepted(Native.QueuePreGui(ref bundle, out NativeDispatch preGui), "pre-GUI base copy"))
             {
@@ -497,7 +531,7 @@ public static partial class HybridSession
         {
             CheckMain();
             if (Capture == null || !TargetHeld || Context.HasMap == 0 || Find.CurrentMap == null || Find.CurrentMap.uniqueID != Context.MapId ||
-                ContextDepth == 0 || Frame != Time.frameCount || !Capture.Context.Equals(Context))
+                ContextDepth == 0 || Frame != Time.frameCount || !CaptureMatchesContext)
                 throw new InvalidOperationException("Whole world GUI callback is outside its coherent map frame.");
 
             if (worldScope.Owner != null)
@@ -629,7 +663,8 @@ public static partial class HybridSession
                 {
                     if (frameWorldCalls != frameWorldReturns)
                         frameUsable = false;
-                    if (!Capture.Context.Equals(Scene.ReadContext()))
+                    if (!CaptureMatchesContext || frameBundle.Key.Content != Context.Revision ||
+                        !Capture.Context.Equals(Scene.ReadContext()))
                         frameUsable = false;
                     if (Context.HasMap != 0 && (!Scene.TryReadMapPose(frameBundle.Key.SourceFrame, out CameraPose finalPose) ||
                         !SamePose(frameBundle.Pose, finalPose)))

@@ -3,6 +3,21 @@
 
 namespace mac {
 
+    namespace {
+
+        bool copy_texture_valid(id<MTLTexture> texture, id<MTLDevice> device, uint32_t width, uint32_t height,
+            uint32_t format, bool scene_format) {
+            if (texture_valid(texture, device, width, height, format)) return true;
+            return scene_format && texture && device && texture.device == device &&
+                texture.textureType == MTLTextureType2D && texture.width == width && texture.height == height &&
+                width && height && width <= 16384 && height <= 16384 && texture.sampleCount == 1 &&
+                texture.arrayLength == 1 && texture.mipmapLevelCount == 1 && !texture.framebufferOnly &&
+                texture.storageMode != MTLStorageModeMemoryless && (!format || texture.pixelFormat == format) &&
+                (texture.pixelFormat == MTLPixelFormatRGBA16Float || texture.pixelFormat == MTLPixelFormatR32Float);
+        }
+
+    }
+
     bool texture_valid(id<MTLTexture> t, id<MTLDevice> d, uint32_t w, uint32_t h, uint32_t f) {
         return t && d && t.device == d && t.textureType == MTLTextureType2D && t.width == w && t.height == h && w && h && w <= 16384 && h <= 16384 &&
             t.sampleCount == 1 && t.arrayLength == 1 && t.mipmapLevelCount == 1 && !t.framebufferOnly && t.storageMode != MTLStorageModeMemoryless &&
@@ -10,9 +25,19 @@ namespace mac {
             t.pixelFormat == MTLPixelFormatBGRA8Unorm_sRGB || t.pixelFormat == MTLPixelFormatRGBA8Unorm_sRGB);
     }
 
+    bool scene_texture_valid(id<MTLTexture> texture, id<MTLDevice> device, const smf_scene::image& image) {
+        if (!copy_texture_valid(texture, device, image.width, image.height, 0, true)) return false;
+        if (image.flags & smf_scene::depth_image) return texture.pixelFormat == MTLPixelFormatR32Float;
+        return texture.pixelFormat != MTLPixelFormatR32Float;
+    }
+
+    uint32_t texture_bytes(id<MTLTexture> texture) {
+        return texture && texture.pixelFormat == MTLPixelFormatRGBA16Float ? 8 : 4;
+    }
+
     int encode_copies(IUnityGraphicsMetalV2* metal, copy_pair* copies, size_t count, std::shared_ptr<source_completion>& completed, id<MTLCommandBuffer> expected_command) {
         @autoreleasepool {
-            if (!metal || !copies || !count || count > 4) return E_INVALIDARG;
+            if (!metal || !copies || !count || count > smf_scene::maximum_images + 4) return E_INVALIDARG;
 
             id<MTLDevice> device = metal->MetalDevice();
             id<MTLCommandBuffer> command = metal->CurrentCommandBuffer();
@@ -22,11 +47,12 @@ namespace mac {
 
             for (size_t i = 0; i < count; ++i) {
                 auto& p = copies[i];
-                if (!p.target || !texture_valid(p.source, device, p.target->width, p.target->height)) return E_INVALIDARG;
+                if (!p.target || !copy_texture_valid(p.source, device, p.target->width, p.target->height, 0, p.scene_format)) return E_INVALIDARG;
 
                 // The caller reserved a retired slot. Replacing an old allocation is
                 // safe only after both the producer and the consumer fences.
-                if (p.target->texture && !texture_valid(p.target->texture, device, p.target->width, p.target->height, uint32_t(p.source.pixelFormat))) p.target->texture = nil;
+                if (p.target->texture && !copy_texture_valid(p.target->texture, device, p.target->width, p.target->height,
+                    uint32_t(p.source.pixelFormat), p.scene_format)) p.target->texture = nil;
                 if (!p.target->texture) {
                     auto descriptor = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:p.source.pixelFormat width:p.target->width height:p.target->height mipmapped:NO];
                     descriptor.storageMode = MTLStorageModePrivate;
@@ -34,7 +60,8 @@ namespace mac {
                     p.target->texture = [device newTextureWithDescriptor:descriptor];
                 }
 
-                if (!texture_valid(p.target->texture, device, p.target->width, p.target->height, uint32_t(p.source.pixelFormat)) || p.target->texture == p.source) return E_FAIL;
+                if (!copy_texture_valid(p.target->texture, device, p.target->width, p.target->height,
+                    uint32_t(p.source.pixelFormat), p.scene_format) || p.target->texture == p.source) return E_FAIL;
             }
 
             auto result = std::make_shared<source_completion>();

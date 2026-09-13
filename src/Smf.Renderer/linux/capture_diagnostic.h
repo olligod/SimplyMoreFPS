@@ -18,7 +18,8 @@ namespace linux_session {
         capture_absent_world = 10,
         capture_frame_fence = 11,
         capture_pre_gui_copy = 12,
-        capture_pre_gui_fence = 13
+        capture_pre_gui_fence = 13,
+        capture_scene_capacity = 14
     };
 
     // Facts recorded by one source copy. A word is meaningful only when its
@@ -28,7 +29,7 @@ namespace linux_session {
     };
 
     struct capture_diagnostic {
-        uint32_t size = 952;
+        uint32_t size = 960;
         uint32_t version = 1;
         uint32_t stage = 0;
         uint32_t render_thread = 0;
@@ -49,7 +50,7 @@ namespace linux_session {
         command_packet pending{};
     };
 
-    static_assert(sizeof(capture_diagnostic) == 952, "CaptureDiagnostic952");
+    static_assert(sizeof(capture_diagnostic) == 960, "CaptureDiagnostic960");
 
     inline bool remember_first_failure(capture_diagnostic& retained, const capture_diagnostic& observed) {
         if (retained.stage || !observed.stage || !observed.session) return false;

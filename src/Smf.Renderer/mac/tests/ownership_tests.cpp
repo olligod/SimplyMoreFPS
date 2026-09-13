@@ -42,11 +42,18 @@ int main() {
     assert(!memory.valid && !memory.allows(0, 0));
 
     memory = {};
-    for (unsigned i = 0; i < 26; ++i) {
+    for (unsigned i = 0; i < memory.items.size(); ++i) {
         memory.add(i + 1, 1, 1);
     }
-    assert(memory.valid && memory.count == 26);
-    memory.add(27, 1, 1);
+    assert(memory.valid && memory.count == memory.items.size());
+    memory.add(memory.items.size() + 1, 1, 1);
+    assert(!memory.valid);
+
+    memory = {};
+    memory.add(1, 1920, 1080, 8);
+    memory.add(1, 1920, 1080, 8);
+    assert(memory.valid && memory.bytes == 1920ull * 1080 * 8);
+    memory.add(1, 1920, 1080, 4);
     assert(!memory.valid);
 
     memory = {};
@@ -57,6 +64,27 @@ int main() {
     assert(memory.allows(memory.limit, 0));
     assert(!memory.allows(memory.limit, 1));
     assert(!memory.allows(UINT64_MAX, 0));
+    assert(memory.allows(memory.scene_limit, 0, memory.scene_limit));
+    assert(!memory.allows(memory.scene_limit, 1, memory.scene_limit));
+    assert(!memory.allows(UINT64_MAX, 0, memory.scene_limit));
+    assert(memory.allows_scene_packet(memory.scene_packet_limit));
+    assert(!memory.allows_scene_packet(memory.scene_packet_limit + 1));
+    assert(memory.allows(memory.scene_packet_limit * 2, memory.scene_display_reserve, memory.scene_limit));
+    assert(!memory.allows(memory.scene_packet_limit * 2 + 1, memory.scene_display_reserve, memory.scene_limit));
+
+    // Two cache families and three live captures fit during a scene replacement.
+    memory.add(1, 2048, 2048, 8);
+    assert(memory.allows(1200ull * 1024 * 1024, 72ull * 1024 * 1024, memory.scene_limit));
+    assert(!memory.allows(1200ull * 1024 * 1024, 72ull * 1024 * 1024));
+
+    memory = {};
+    const uint64_t scene_static = 413ull * 1024 * 1024;
+    const uint64_t live_4k = 3840ull * 2160 * 64;
+    const uint64_t display_4k = 3840ull * 2160 * 32 + 8ull * 1024 * 1024;
+    assert(memory.allows_scene_packet(scene_static + live_4k));
+    assert(memory.allows((scene_static + live_4k) * 2, memory.scene_display_reserve, memory.scene_limit));
+    assert(memory.allows(scene_static * 2 + live_4k * 3, display_4k, memory.scene_limit));
+    assert(!memory.allows(scene_static * 2 + live_4k * 4, display_4k, memory.scene_limit));
 
     for (int bits = 0; bits < 8; ++bits) {
         assert(mac::source_may_retire(bits & 1, bits & 2, bits & 4) == (bits == 1));
