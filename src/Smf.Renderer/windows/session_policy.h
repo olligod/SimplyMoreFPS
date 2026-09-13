@@ -81,6 +81,13 @@ namespace session {
             g.content_revision == content && g.state > 0 && g.state < 4;
     }
 
+    inline bool content_superseded(const session_command& command, uint32_t phase, uint64_t fence) {
+        // A committed activation must report its real result so main retires the right generation.
+        const bool content_bound = command.operation == op_prepare_hidden || command.operation == op_prepare_replacement ||
+            (command.operation == op_activate && phase == 0);
+        return content_bound && command.content_revision != fence;
+    }
+
     inline bool retain_historical(const session_status& status, uint64_t fence) {
         for (const auto& g : status.generations) {
             if (g.generation == status.active_generation && g.frames && g.content_revision != fence) return true;

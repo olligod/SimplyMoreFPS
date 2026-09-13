@@ -797,8 +797,7 @@ namespace session {
                 return true;
             }
 
-            const bool content_bound = c.operation == op_prepare_hidden || c.operation == op_prepare_replacement || c.operation == op_activate;
-            if (content_bound && c.content_revision != s.content.load()) {
+            if (content_superseded(c, op.phase, s.content.load())) {
                 result.superseded = true;
                 return true;
             }

@@ -5,6 +5,7 @@
 - Added smooth camera movement on space maps, including the planet background and orbital debris.
 - Fixed stale depth textures on Linux when their source changes.
 - Fixed a frozen new-colony setup screen on Linux.
+- Fixed a loading-screen freeze when entering a map on Windows.
 - Fixed missing map labels on space maps on macOS.
 - Fixed automatic fallback and recovery for unsupported camera effects on space maps.
 - Removed long shader-compilation waits when entering or reloading a space map on Windows.

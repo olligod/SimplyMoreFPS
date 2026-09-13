@@ -164,6 +164,18 @@ int main() {
     check(!accept_content(9, 4, false, old, 8, 4, 31), "late old session rejected");
     check(!accept_content(8, 4, true, old, 8, 4, 31), "restore seals captures before native routing");
 
+    session_command activation{};
+    activation.operation = op_activate;
+    activation.content_revision = 8;
+    check(!content_superseded(activation, 0, 8), "current activation may begin");
+    check(content_superseded(activation, 0, 9), "obsolete activation is rejected before visibility changes");
+    check(!content_superseded(activation, 1, 9), "committed activation survives a later content fence");
+    check(!content_superseded(activation, 2, 9), "activation completion reports the generation that became live");
+    activation.operation = op_prepare_replacement;
+    check(content_superseded(activation, 1, 9), "obsolete hidden preparation still supersedes");
+    activation.operation = op_restore_native;
+    check(!content_superseded(activation, 0, 9), "content cannot supersede native restoration");
+
     auto& next = s.generations[1];
     next.generation = 32;
     next.content_revision = 5;
