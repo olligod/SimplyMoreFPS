@@ -231,6 +231,10 @@ internal sealed class SpaceMapCapture
 
         try
         {
+            // Camera modes can change before the host retires this capture.
+            if (!MapImageEffects.CanCapture(capture.source, out _))
+                return;
+
             capture.effectInputs[__instance] = new EffectInput
             {
                 Frame = Time.frameCount,
