@@ -358,7 +358,8 @@ public static partial class HybridSession
             if (string.IsNullOrWhiteSpace(owner))
                 throw new ArgumentException("A unique Harmony owner is required.");
 
-            Core = new LifecycleCoordinator(native is IRetainedNativeSession retained ? retained.PreviousSession : 0);
+            Core = new LifecycleCoordinator(native is IRetainedNativeSession retained ? retained.PreviousSession : 0,
+                restoreObsoleteActivation: native is LinuxRendererApi);
             OwnerId = owner;
             Native = native;
             Scene = scene;

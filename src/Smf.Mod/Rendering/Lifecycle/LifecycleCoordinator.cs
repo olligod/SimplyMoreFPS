@@ -98,6 +98,7 @@ public struct WorldFence
 public sealed class LifecycleCoordinator
 {
     private readonly int mainThreadId = Thread.CurrentThread.ManagedThreadId;
+    private readonly bool restoreObsoleteActivation;
     private ulong serial;
     private ulong nextGeneration;
     private ulong wantedContent;
@@ -161,9 +162,10 @@ public sealed class LifecycleCoordinator
 
     public Command? Pending => pending;
 
-    public LifecycleCoordinator(ulong previousSession = 0)
+    public LifecycleCoordinator(ulong previousSession = 0, bool restoreObsoleteActivation = false)
     {
         Session = previousSession;
+        this.restoreObsoleteActivation = restoreObsoleteActivation;
     }
 
     private void AssertMainThread()
@@ -375,6 +377,14 @@ public sealed class LifecycleCoordinator
             BeginStop();
         if (reply.HasValue)
             AcceptReply();
+
+        if (restoreObsoleteActivation && State == Phase.Activating && pending.HasValue && candidateContent != wantedContent)
+        {
+            // Linux needs a fresh capture after transferring the window. Obsolete
+            // content cannot supply it, so restore routing before starting again.
+            BeginStop();
+        }
+
         if (WaitingForOwnerRecovery || pending.HasValue)
             return null;
 
