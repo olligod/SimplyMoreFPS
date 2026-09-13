@@ -211,6 +211,7 @@ public struct FrameBundle
     public uint CoverageFlags;
     public uint CoverageReserved;
     public double CoverageA, CoverageB, CoverageC, CoverageD, CoverageE, CoverageF;
+    public ulong SceneDescription;
 }
 
 // Marks an ordered end of frame only; the native owner waits for the matching

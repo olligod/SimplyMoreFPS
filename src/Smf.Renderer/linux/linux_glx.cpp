@@ -158,7 +158,8 @@ void main() {
                glXGetCurrentDrawable() == drawable && glXGetCurrentReadDrawable() == drawable;
     }
 
-    bool source_glx::copy(GLuint source, GLuint& owned, uint32_t width, uint32_t height, bool original) {
+    bool source_glx::copy(GLuint source, GLuint& owned, uint32_t width, uint32_t height, bool original,
+                          GLenum copy_format, bool offscreen_bound) {
         last_copy = {};
         auto& d = last_copy.words;
         d[0] = 1;
@@ -209,7 +210,11 @@ void main() {
             d[8] = w;
             d[9] = h;
             d[31] |= 2;
-            if (before.draw_fbo || before.draw_buffer != GL_BACK || w != width || h != height) return failure(2);
+            if ((!offscreen_bound && (before.draw_fbo || before.draw_buffer != GL_BACK)) || w != width || h != height)
+                return failure(2);
+
+            // Space probes can leave their FBO bound even after Unity restores its logical target.
+            if (offscreen_bound) glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
             GLint samples = 0;
             GLint type = 0;
@@ -226,7 +231,10 @@ void main() {
             d[10] = type;
             d[12] = samples;
             d[13] = uint32_t(r) | (uint32_t(g) << 8) | (uint32_t(b) << 16);
-            if (samples > 1 || type != GL_UNSIGNED_NORMALIZED || r != 8 || g != 8 || b != 8) return failure(3);
+            if (samples > 1 || type != GL_UNSIGNED_NORMALIZED || r != 8 || g != 8 || b != 8) {
+                before.restore();
+                return failure(3);
+            }
 
             glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
             glGetIntegerv(GL_READ_BUFFER, &default_read);
@@ -255,7 +263,8 @@ void main() {
             d[9] = h;
             d[10] = format;
             d[31] |= 2;
-            if (w != int(width) || h != int(height) || (format != GL_RGBA8 && format != GL_SRGB8_ALPHA8)) {
+            const bool compatible = copy_format == GL_RGBA8 ? format == GL_RGBA8 || format == GL_SRGB8_ALPHA8 : format == GLint(copy_format);
+            if (w != int(width) || h != int(height) || !compatible) {
                 okay = false;
                 if (!failed_stage) failed_stage = 6;
             }
@@ -280,8 +289,8 @@ void main() {
                 }
 
                 glBindTexture(GL_TEXTURE_2D, owned);
-                glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, width, height);
-                performance[storage_bytes_issued] += uint64_t(width) * height * 4;
+                glTexStorage2D(GL_TEXTURE_2D, 1, copy_format, width, height);
+                performance[storage_bytes_issued] += uint64_t(width) * height * (copy_format == GL_RGBA16F ? 8 : 4);
             }
 
             d[3] = owned;
@@ -296,7 +305,7 @@ void main() {
                 glDisable(GL_FRAMEBUFFER_SRGB);
                 glBlitFramebuffer(0, 0, width, height, 0, 0, width, height, GL_COLOR_BUFFER_BIT, GL_NEAREST);
                 performance[blit_calls]++;
-                performance[blit_bytes_issued] += uint64_t(width) * height * 4;
+                performance[blit_bytes_issued] += uint64_t(width) * height * (copy_format == GL_RGBA16F ? 8 : 4);
             }
 
             glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
@@ -466,9 +475,46 @@ void main() {
         return good(*this);
     }
 
+    int worker_glx::scene_available() {
+        if (scene_fence) {
+            const GLenum status = glClientWaitSync(scene_fence, 0, 0);
+            if (status == GL_WAIT_FAILED) return -1;
+            if (status != GL_ALREADY_SIGNALED && status != GL_CONDITION_SATISFIED) return 0;
+            glDeleteSync(scene_fence);
+            scene_fence = nullptr;
+        }
+        const int64_t now = native_now();
+        if (now >= scene_rate_check) {
+            scene_rate_check = now + 1000000000;
+            scene_interval = 16666667;
+            const char* extensions = glXQueryExtensionsString(display, screen);
+            if (extensions && std::strstr(extensions, "GLX_OML_sync_control")) {
+                auto rate = reinterpret_cast<PFNGLXGETMSCRATEOMLPROC>(glXGetProcAddressARB(
+                    reinterpret_cast<const GLubyte*>("glXGetMscRateOML")));
+                int32_t numerator = 0, denominator = 0;
+                if (rate && rate(display, drawable, &numerator, &denominator) && numerator > 0 && denominator > 0) {
+                    const double hz = double(numerator) / denominator;
+                    if (hz >= 20 && hz <= 1000) scene_interval = int64_t(1000000000. / hz);
+                }
+            }
+        }
+        if (now < scene_next) return 0;
+        scene_started = now;
+        return 1;
+    }
+
+    bool worker_glx::scene_submitted() {
+        if (scene_fence) return false;
+        scene_fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
+        glFlush();
+        scene_next = scene_started + scene_interval;
+        return scene_fence != nullptr && glGetError() == GL_NO_ERROR;
+    }
+
     draw_outcome worker_glx::draw(geometry_ticket ticket, const layer& base, const layer& world, const layer& hud, const layer& cache,
                                   const affine& desired, uint32_t logical_width, uint32_t logical_height,
-                                  const selection::geometry& selection_geometry) {
+                                  const selection::geometry& selection_geometry,
+                                  const smf_scene::frame* scene_frame, const smf_scene::view* scene_view) {
         for (auto& fact : draw_facts) fact = 0;
         draw_facts[0] = 1;
 
@@ -484,6 +530,32 @@ void main() {
         affine screen_to_world;
         if (!inverse(desired, screen_to_world)) return draw_outcome::failed;
         draw_facts[0] = 3;
+
+        layer composed{};
+        if (scene_frame) {
+            if (!scene_view) return draw_outcome::failed;
+            const int available = scene_available();
+            if (available <= 0) return available < 0 ? draw_outcome::failed : draw_outcome::deferred;
+            if (!scene_ready) {
+                if (!scene.initialize()) return draw_outcome::failed;
+                scene_ready = true;
+            }
+            if (!scene.draw(*scene_frame, *scene_view)) return draw_outcome::failed;
+            composed.texture = scene.texture();
+            composed.width = scene_view->width;
+            composed.height = scene_view->height;
+        } else if (scene_ready) {
+            if (scene_fence) {
+                const GLenum result = glClientWaitSync(scene_fence, 0, 0);
+                if (result == GL_WAIT_FAILED) return draw_outcome::failed;
+                if (result != GL_ALREADY_SIGNALED && result != GL_CONDITION_SATISFIED) return draw_outcome::deferred;
+                glDeleteSync(scene_fence);
+                scene_fence = nullptr;
+            }
+            // Ground frames no longer need scene-sized scratch, but keep compiled programs warm.
+            scene.clear_textures();
+            scene_next = 0;
+        }
 
         glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
         glDrawBuffer(GL_BACK);
@@ -523,12 +595,13 @@ void main() {
         glUniform1i(glGetUniformLocation(program, "solid"), 0);
         glDisable(GL_BLEND);
 
-        if (cache.texture) {
+        if (!scene_frame && cache.texture) {
             draw_layer(cache, affine{0, 0, .5, 0, 0, .5}, true);
             draw_layer(cache, multiply(cache.source, screen_to_world), true);
         }
 
-        draw_layer(base, world.texture ? multiply(base.source, screen_to_world) : affine{}, true);
+        if (scene_frame) draw_layer(composed, affine{}, true);
+        else draw_layer(base, world.texture ? multiply(base.source, screen_to_world) : affine{}, true);
         glEnable(GL_BLEND);
         glBlendEquation(GL_FUNC_ADD);
         glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
@@ -650,6 +723,10 @@ void main() {
             if (sampler) glDeleteSamplers(1, &sampler);
             if (vao) glDeleteVertexArrays(1, &vao);
             if (program) glDeleteProgram(program);
+            scene.release();
+            scene_ready = false;
+            if (scene_fence) glDeleteSync(scene_fence);
+            scene_fence = nullptr;
 
             // Cleared so a retry can never delete a name the driver has reused.
             sampler = 0;

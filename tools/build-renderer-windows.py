@@ -31,6 +31,9 @@ RENDERER_SOURCES = (
     'camera_math.cpp',
     'commit_completion.cpp',
     'present_observer.cpp',
+    'scene_compositor.cpp',
+    'scene_image_filters.cpp',
+    'scene_transport.cpp',
     'session_bridge.cpp',
     'session_source.cpp',
     'session_worker.cpp',
@@ -60,11 +63,12 @@ RENDERER_EXPORTS = (tuple('smf_session_' + name for name in SESSION_EXPORTS)
                     + tuple('smf_camera_bridge_' + name for name in BRIDGE_EXPORTS)
                     + tuple('smf_camera_control_' + name for name in CONTROL_EXPORTS)
                     + ('smf_selection_publish',)
+                    + ('smf_scene_register_filter',)
                     + tuple('smf_po_' + name for name in OBSERVER_EXPORTS))
 CAMERA_EXPORTS = tuple('smf_camera_' + name for name in ('create', 'adopt', 'configure', 'step', 'release'))
 
 TOOLS = ('cl.exe', 'link.exe', 'dumpbin.exe', 'dotnet.exe')
-RENDERER_LIBRARIES = ('d3d11.lib', 'dxgi.lib', 'dcomp.lib', 'ole32.lib', 'user32.lib')
+RENDERER_LIBRARIES = ('d3d11.lib', 'd3dcompiler.lib', 'dxgi.lib', 'dcomp.lib', 'ole32.lib', 'user32.lib')
 
 
 def digest(path):
@@ -152,11 +156,26 @@ class Build:
         self.run('minhook', [self.tool['cl.exe'], '/nologo', '/O2', '/W4', '/MT', '/TC', '/c',
                              '/Fo' + str(obj) + '\\', *sources])
 
+    def build_scene_shaders(self):
+        generated = self.out / 'generated'
+        generated.mkdir()
+        obj = self.out / 'obj/shaders'
+        obj.mkdir(parents=True)
+        compiler = obj / 'compile_scene_shaders.exe'
+        self.run('scene-shader-compiler', [*self.compile, '/Fo' + str(obj) + '\\', '/Fe' + str(compiler),
+                                         self.renderer / 'tools/compile_scene_shaders.cpp',
+                                         '/link', '/INCREMENTAL:NO', 'd3dcompiler.lib'])
+        header = generated / 'scene_shader_bytecode.h'
+        self.run('scene-shaders', [compiler, header])
+        self.receipt['generated'] = [record(header, self.out)]
+
     def build_renderer(self):
+        self.build_scene_shaders()
         obj = self.out / 'obj/renderer'
         obj.mkdir(parents=True)
         sources = [self.renderer / name for name in RENDERER_SOURCES]
         self.run('renderer', [*self.compile, '/DUNICODE', '/D_UNICODE', '/LD', '/Fo' + str(obj) + '\\',
+                              '/I' + str(self.out / 'generated'),
                               '/Fe' + str(self.native / 'Smf.Renderer.dll'), *sources, *self.minhook_objects,
                               '/link', '/INCREMENTAL:NO', '/Brepro', *RENDERER_LIBRARIES])
 

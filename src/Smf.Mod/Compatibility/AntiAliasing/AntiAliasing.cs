@@ -8,7 +8,7 @@ using Verse;
 namespace SimplyMoreFPS.Compatibility;
 
 // Reuse the live effect: adding another controller replaces AntiAliasing's singleton.
-internal sealed class AntiAliasing : IMapImageEffect
+internal sealed partial class AntiAliasing : IMapImageEffect, ISceneImageEffect
 {
     internal const string ControllerName = "AntiAliasing.Rendering.AntiAliasingController";
 
@@ -122,5 +122,6 @@ internal sealed class AntiAliasing : IMapImageEffect
 
     public void Dispose()
     {
+        ReleaseSceneTextures();
     }
 }

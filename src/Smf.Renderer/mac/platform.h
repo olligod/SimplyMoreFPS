@@ -34,6 +34,7 @@ constexpr int E_INVALIDARG = -11;
 constexpr int E_NOTIMPL = -12;
 constexpr int E_FAIL = -13;
 constexpr int E_NOINTERFACE = -14;
+constexpr int E_OUTOFMEMORY = static_cast<int32_t>(0x8007000eu);
 
 inline bool FAILED(int n) { return n < 0; }
 

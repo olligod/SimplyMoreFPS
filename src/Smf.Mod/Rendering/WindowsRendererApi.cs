@@ -50,6 +50,7 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
         window = unityWindow;
 
         NativeModule module = NativeModule.Open(libraryPath);
+        SceneShaderPrograms.Bind(module);
 
         startSession = module.Bind<StartFn>("smf_session_start");
         sendCommand = module.Bind<CommandFn>("smf_session_command");
@@ -284,8 +285,8 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
         CheckMain();
         var packet = new FramePacket
         {
-            Size = 416,
-            Version = 3,
+            Size = 424,
+            Version = 4,
             Session = bundle.Key.Session,
             Content = bundle.Key.Content,
             Generation = bundle.Key.Generation,
@@ -308,9 +309,10 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
             CoverageD = bundle.CoverageD,
             CoverageE = bundle.CoverageE,
             CoverageF = bundle.CoverageF,
+            SceneDescription = bundle.SceneDescription,
         };
 
-        int result = queueFrame(ref packet, 416, out IntPtr ticket, out int token);
+        int result = queueFrame(ref packet, 424, out IntPtr ticket, out int token);
         dispatch = new NativeDispatch { Ticket = ticket, Token = token };
         return result;
     }
@@ -396,7 +398,7 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
         RequireSize<CameraPose>(264);
         RequireSize<CommandPacket>(88);
         RequireSize<PreGuiPacket>(64);
-        RequireSize<FramePacket>(416);
+        RequireSize<FramePacket>(424);
         RequireSize<NativeFramePacket>(64);
         RequireSize<AckPacket>(80);
         RequireSize<GenerationStatus>(128);
@@ -406,7 +408,8 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
             (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.Pose)) != 72 ||
             (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageTexture)) != 336 ||
             (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageSerial)) != 344 ||
-            (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageA)) != 368)
+            (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.CoverageA)) != 368 ||
+            (int)Marshal.OffsetOf(typeof(FramePacket), nameof(FramePacket.SceneDescription)) != 416)
             throw new InvalidOperationException("Session ABI field offsets differ from SessionBridge.h.");
     }
 
@@ -480,6 +483,7 @@ public sealed class WindowsRendererApi : INativeSession, IRetainedNativeSession,
         public double CoverageD;
         public double CoverageE;
         public double CoverageF;
+        public ulong SceneDescription;
     }
 
     [StructLayout(LayoutKind.Sequential, Pack = 8)]

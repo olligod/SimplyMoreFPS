@@ -1,8 +1,10 @@
 #include "session_internal.h"
 #include "present_observer.h"
+#include "scene_transport.h"
 #include "../common/selection_overlay.h"
 #include <algorithm>
 #include <cstring>
+#include <new>
 
 // The compositor worker: a dedicated native thread that owns the DirectComposition
 // target on the Unity window and keeps the camera moving while Unity is blocked.
@@ -34,6 +36,11 @@ namespace session {
             selection::worker overlay;
             selection::geometry overlay_displayed{};
             std::array<worker_slot, generation_count> slots{};
+            std::array<std::shared_ptr<scene_channel>, generation_count> scene_channels{};
+            std::array<std::unique_ptr<scene_worker>, generation_count> scene_renderers{};
+            std::array<smf_bridge_desired, generation_count> scene_desired{};
+            std::array<bool, generation_count> scene_requested{};
+            std::array<bool, generation_count> scene_pose_valid{};
             uint64_t detach_commit = 0;
             uint64_t detach_completion = 0;
 
@@ -208,6 +215,7 @@ namespace session {
 
             void camera() {
                 auto& s = state();
+                scene_requested = {};
                 const uint64_t fence = s.content.load();
 
                 // The gate orders the fence against source and parent commits. Acknowledging it
@@ -265,24 +273,101 @@ namespace session {
                     focused, point_valid, left, point.x, point.y);
                 bool outline_changed = false;
                 HRESULT hr = set_selection(outline, outline_changed);
-                const bool camera_changed = std::memcmp(&transform, &slot.displayed, sizeof(transform)) != 0;
+                const bool scene = s.scenes[index] != nullptr;
+                if (scene) {
+                    scene_requested[index] = true;
+                    scene_pose_valid[index] = true;
+                    scene_desired[index] = desired;
+                }
+                const bool camera_changed = !scene && std::memcmp(&transform, &slot.displayed, sizeof(transform)) != 0;
 
                 if (SUCCEEDED(hr) && !camera_changed && !outline_changed) {
                     // Same pose as the last Commit: publish it without another ~1000 commits/s.
-                    camera_bridge::worker_reused_pose();
+                    if (!scene) camera_bridge::worker_reused_pose();
                     return;
                 }
 
                 if (SUCCEEDED(hr) && camera_changed) hr = slot.map_parent->SetTransform(transform);
                 uint64_t serial = 0;
                 if (SUCCEEDED(hr)) hr = commit(serial);
-                camera_bridge::worker_committed(hr);
+                if (!scene) camera_bridge::worker_committed(hr);
                 if (FAILED(hr)) {
                     fail(hr);
                     return;
                 }
 
                 slot.displayed = transform;
+            }
+
+            // Compilation, shared-resource admission and scene rendering never hold the session gate.
+            void scenes() {
+                auto& s = state();
+                for (size_t i = 0; i < generation_count; ++i) {
+                    std::shared_ptr<scene_channel> channel;
+                    session_generation_status generation{};
+                    smf_bridge_desired desired{};
+                    bool requested = false;
+                    bool allowed = false;
+                    {
+                        lock held(s.gate);
+                        channel = s.scenes[i];
+                        generation = s.status.generations[i];
+                        requested = scene_requested[i];
+                        desired = scene_desired[i];
+                        allowed = s.status.worker_state == 2 && is_current(s.session.load(),
+                            generation.content_revision, generation.generation);
+                    }
+                    if (!channel) {
+                        scene_renderers[i].reset();
+                        scene_channels[i].reset();
+                        scene_pose_valid[i] = false;
+                        continue;
+                    }
+                    if (scene_channels[i] != channel || !scene_renderers[i]) {
+                        scene_renderers[i].reset(new (std::nothrow) scene_worker());
+                        if (!scene_renderers[i]) {
+                            if (channel->retiring.load()) {
+                                channel->worker_retired = true;
+                                continue;
+                            }
+                            lock held(s.gate);
+                            fail(E_OUTOFMEMORY);
+                            continue;
+                        }
+                        scene_channels[i] = channel;
+                        scene_pose_valid[i] = false;
+                    }
+                    auto& renderer = *scene_renderers[i];
+                    HRESULT hr = S_FALSE;
+                    if (channel->retiring.load()) {
+                        hr = renderer.retire(*channel);
+                    } else if (!allowed) {
+                        hr = renderer.drain(*channel);
+                    } else if (allowed && (generation.state != 3 || scene_pose_valid[i])) {
+                        hr = renderer.prepare(*channel, generation.state == 3 ? &desired : nullptr);
+                        if (SUCCEEDED(hr)) {
+                            lock held(s.gate);
+                            if (s.scenes[i] == channel && s.status.worker_state == 2 &&
+                                is_current(s.session.load(), generation.content_revision, generation.generation)) {
+                                hr = renderer.present(*channel);
+                                if (hr == S_OK) {
+                                    ++s.status.worker_commit;
+                                    if (generation.state == 3) {
+                                        s.status.active_frame = renderer.source_frame();
+                                        camera_bridge::worker_committed(hr);
+                                    }
+                                    wake();
+                                } else if (requested && renderer.reused_pose()) {
+                                    camera_bridge::worker_reused_pose();
+                                }
+                            }
+                        }
+                    }
+                    if (FAILED(hr)) {
+                        lock held(s.gate);
+                        if (s.scenes[i] == channel) fail(hr);
+                    }
+                }
             }
 
             void detach() {
@@ -378,6 +463,8 @@ namespace session {
                 }
             }
 
+            worker.scenes();
+
             // Wake on commands and completions; otherwise a bounded cadence, never a spin.
             WaitForSingleObject(s.wake, 1);
         }
@@ -391,6 +478,8 @@ namespace session {
 
         // Release all COM objects on this thread before signalling that it has stopped.
         worker.slots = {};
+        worker.scene_renderers = {};
+        worker.scene_channels = {};
         worker.root.Reset();
         worker.target.Reset();
         worker.selection_visuals = {};

@@ -6,6 +6,9 @@
 // Windows build keeps QPC stamps and carry CLOCK_MONOTONIC nanoseconds here.
 namespace linux_session {
 
+    // Scene probes may leave an offscreen FBO bound; the base copy still reads the original drawable.
+    enum pre_gui_flags : uint32_t { pre_gui_map = 1, pre_gui_scene = 2 };
+
 #pragma pack(push, 8)
 
     // The no-map case requires all-zero bytes.
@@ -51,6 +54,7 @@ namespace linux_session {
         uint32_t flags, world_dispatches;
         pose_packet pose;
         cache_packet cache;
+        uint64_t scene_description;
     };
 
     struct native_frame_packet {
@@ -98,8 +102,8 @@ namespace linux_session {
     static_assert(sizeof(command_packet) == 88, "Command88");
     static_assert(sizeof(pre_gui_packet) == 64, "PreGui64");
     static_assert(sizeof(cache_packet) == 80 && offsetof(cache_packet, affine) == 32, "Cache80");
-    static_assert(sizeof(frame_packet) == 416 && offsetof(frame_packet, pose) == 72 &&
-                  offsetof(frame_packet, cache) == 336, "Frame416");
+    static_assert(sizeof(frame_packet) == 424 && offsetof(frame_packet, pose) == 72 &&
+                  offsetof(frame_packet, cache) == 336 && offsetof(frame_packet, scene_description) == 416, "Frame424 version4");
     static_assert(sizeof(native_frame_packet) == 64, "NativeFrame64");
     static_assert(sizeof(ack_packet) == 80, "Ack80");
     static_assert(sizeof(generation_status_packet) == 128, "Generation128");

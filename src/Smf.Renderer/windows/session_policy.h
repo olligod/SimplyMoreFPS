@@ -27,10 +27,11 @@ namespace session {
     }
 
     inline bool frame_layout_matches(uint32_t bytes, uint32_t size, uint32_t version) {
-        return bytes == sizeof(session_frame) && size == bytes && version == 3;
+        return bytes == sizeof(session_frame) && size == bytes && version == 4;
     }
 
     inline bool cache_valid(const session_frame& frame) {
+        if (frame.scene_description) return false;
         const auto& cache = frame.cache;
 
         if (!(frame.flags & session_has_map)) {

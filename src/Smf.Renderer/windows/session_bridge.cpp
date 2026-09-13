@@ -119,7 +119,18 @@ namespace session {
             if (t.first) t.first->Release();
             if (t.second) t.second->Release();
             if (t.cache) t.cache->Release();
+            if (t.has_scene) {
+                for (uint32_t i = 0; i < t.scene.frame.image_count; ++i)
+                    reinterpret_cast<ID3D11Texture2D*>(t.scene.images[i].texture)->Release();
+            }
+            t.first = t.second = t.cache = nullptr;
+            t.has_scene = false;
         }
+
+        struct ticket_release {
+            ticket& value;
+            ~ticket_release() { release_textures(value); }
+        };
 
         // Unity render thread entry (GL.IssuePluginEventAndData).
         void __stdcall render_callback(int32_t event, void* data) noexcept {
@@ -138,6 +149,7 @@ namespace session {
                 source_pump();
 
                 ticket local{};
+                ticket_release release{local};
                 {
                     lock l(s.gate);
                     if (event) {
@@ -433,7 +445,12 @@ SMF_SESSION_API int32_t __cdecl smf_session_frame(const session_frame* input, ui
     try_lock l(s.gate);
     if (!l) return S_FALSE;
     if (!is_current(p->session, p->content_revision, p->generation)) return E_ABORT;
-    if (!cache_valid(*p)) return E_INVALIDARG;
+    smf_scene::snapshot scene{};
+    if (p->scene_description) {
+        if (!(p->flags & session_has_map) || !smf_scene::read_snapshot(
+            reinterpret_cast<const smf_scene::description*>(p->scene_description), p->source_frame,
+            static_cast<uint32_t>(p->pose.pixel_width), static_cast<uint32_t>(p->pose.pixel_height), scene)) return E_INVALIDARG;
+    } else if (!cache_valid(*p)) return E_INVALIDARG;
 
     session::ticket* t = nullptr;
     const HRESULT hr = allocate_ticket(ticket_kind::frame, ticket, token, t);
@@ -442,7 +459,14 @@ SMF_SESSION_API int32_t __cdecl smf_session_frame(const session_frame* input, ui
     t->frame = *p;
     t->first = reinterpret_cast<ID3D11Texture2D*>(p->world_texture);
     t->second = reinterpret_cast<ID3D11Texture2D*>(p->hud_texture);
-    t->cache = reinterpret_cast<ID3D11Texture2D*>(p->cache.texture);
+    t->cache = p->scene_description ? nullptr : reinterpret_cast<ID3D11Texture2D*>(p->cache.texture);
+    t->has_scene = p->scene_description != 0;
+    if (t->has_scene) {
+        t->scene = scene;
+        t->frame.scene_description = 0;
+        for (uint32_t i = 0; i < scene.frame.image_count; ++i)
+            reinterpret_cast<ID3D11Texture2D*>(scene.images[i].texture)->AddRef();
+    }
     t->first->AddRef();
     t->second->AddRef();
     if (t->cache) t->cache->AddRef();

@@ -39,7 +39,9 @@ internal sealed class MapCoverageCapture
     private readonly List<Auxiliary> cameras = new List<Auxiliary>();
     private readonly int nativeWidth;
     private readonly int nativeHeight;
+    private readonly bool raw;
     private Auxiliary color;
+    private Auxiliary white;
     private CoverageColorEffect effect;
     private CellRect fullMapView;
     private Matrix4x4 view;
@@ -52,6 +54,7 @@ internal sealed class MapCoverageCapture
     private Affine cachedAffine;
     private ulong cacheSerial;
     private ulong texturePointer;
+    private ulong whitePointer;
     private int refreshTick;
     private int cachedTick;
     private long nextRefresh;
@@ -67,12 +70,17 @@ internal sealed class MapCoverageCapture
 
     internal uint Height { get; private set; }
 
+    internal Camera CoverageCamera => color.Camera;
+
+    internal ulong CacheSerial => cacheSerial;
+
     internal bool TargetsRestored => savedGlobals == null && !rendering && viewCache.Count == 0;
 
     private bool Capturing => !released && !cancelled && frame == Time.frameCount && finishedFrame != frame;
 
-    internal MapCoverageCapture(SceneContext context, Func<bool> eligible, Action<Exception> onFailure)
+    internal MapCoverageCapture(SceneContext context, Func<bool> eligible, Action<Exception> onFailure, bool raw = false)
     {
+        this.raw = raw;
         map = Find.CurrentMap;
         source = Find.Camera;
         driver = Find.CameraDriver;
@@ -108,10 +116,13 @@ internal sealed class MapCoverageCapture
 
         foreach (SubcameraDef def in DefDatabase<SubcameraDef>.AllDefsListForReading.OrderBy(d => d.depth))
         {
+            // Fitted capture cameras have their own projection and completion callback.
+            if (def.doNotUpdate) continue;
+
             Camera original = Current.SubcameraDriver.GetSubcamera(def);
             if (original == null || !original.enabled) continue;
 
-            if (def.doNotUpdate || original.targetTexture == null || original.commandBufferCount != 0 ||
+            if (original.targetTexture == null || original.commandBufferCount != 0 ||
                 original.GetComponents<MonoBehaviour>().Length != 0)
             {
                 throw new InvalidOperationException("Unsupported map coverage dependent camera: " + def.defName);
@@ -123,15 +134,29 @@ internal sealed class MapCoverageCapture
             AddCamera(original, new RenderTexture(descriptor), depth++, def == SubcameraDefOf.WaterDepth);
         }
 
-        color = AddCamera(source, new RenderTexture((int)Width, (int)Height, 24, RenderTextureFormat.ARGB32, RenderTextureReadWrite.Default), depth, false);
+        RenderTextureFormat format = raw ? RenderTextureFormat.ARGBHalf : RenderTextureFormat.ARGB32;
+        color = AddCamera(source, new RenderTexture((int)Width, (int)Height, raw ? 32 : 24, format,
+            RenderTextureReadWrite.Default), depth++, false);
 
         // An offscreen target starts empty, so paint the border outside the map with the source
         // camera's background before the normal color effect runs over it.
         color.Camera.clearFlags = CameraClearFlags.SolidColor;
-        color.Camera.backgroundColor = source.backgroundColor;
+        color.Camera.backgroundColor = raw ? Color.clear : source.backgroundColor;
 
         effect = color.Owner.AddComponent<CoverageColorEffect>();
-        effect.Bind(source);
+        effect.Bind(source, raw);
+
+        if (raw)
+        {
+            white = AddCamera(source, new RenderTexture((int)Width, (int)Height, 32, format,
+                RenderTextureReadWrite.Default), depth, false);
+            white.Camera.clearFlags = CameraClearFlags.SolidColor;
+            white.Camera.backgroundColor = Color.white;
+            SpaceDebrisDraws.Exclude(color.Camera);
+            SpaceDebrisDraws.Exclude(white.Camera);
+            whitePointer = unchecked((ulong)white.Target.GetNativeTexturePtr().ToInt64());
+            if (whitePointer == 0) throw new InvalidOperationException("The white map cache has no native texture.");
+        }
 
         texturePointer = unchecked((ulong)color.Target.GetNativeTexturePtr().ToInt64());
         if (texturePointer == 0) throw new InvalidOperationException("The map cache has no native texture.");
@@ -313,8 +338,9 @@ internal sealed class MapCoverageCapture
             item.Camera.enabled = true;
         }
 
-        color.Camera.backgroundColor = source.backgroundColor;
+        color.Camera.backgroundColor = raw ? Color.clear : source.backgroundColor;
         color.Camera.cullingMask = source.cullingMask;
+        if (white != null) white.Camera.cullingMask = source.cullingMask;
     }
 
     private void UpdateBounds()
@@ -461,11 +487,11 @@ internal sealed class MapCoverageCapture
 
             ++item.PreRenders;
             if (item.PreRenders != 1) throw new InvalidOperationException("Coverage camera rendered twice in one native frame.");
-            if (item != capture.color) return;
+            if (item != capture.color && item != capture.white) return;
 
             capture.pendingAffine = ReadAffine(camera.projectionMatrix * camera.worldToCameraMatrix, capture.Width, capture.Height);
-            capture.ValidateBackgroundCorner(capture.pendingAffine);
-            if (capture.cameras.Any(c => c != item && (c.PreRenders != 1 || c.PostRenders != 1)))
+            if (!capture.raw) capture.ValidateBackgroundCorner(capture.pendingAffine);
+            if (capture.cameras.Any(c => c != capture.color && c != capture.white && (c.PreRenders != 1 || c.PostRenders != 1)))
             {
                 throw new InvalidOperationException("Coverage dependency cameras did not finish before color.");
             }
@@ -494,7 +520,7 @@ internal sealed class MapCoverageCapture
             ++item.PostRenders;
 
             // The camera stays enabled here because OnRenderImage still has to run after this hook.
-            if (item == capture.color) capture.RestoreGlobals();
+            if (item == capture.color || item == capture.white) capture.RestoreGlobals();
         }
         catch (Exception error)
         {
@@ -535,6 +561,30 @@ internal sealed class MapCoverageCapture
         bundle.CoverageF = cachedAffine.F;
 
         return bundle.CoverageTexture != 0;
+    }
+
+    internal unsafe void DescribeRaw(ScenePacketBuffer packet)
+    {
+        if (!raw || whitePointer == 0 || cacheSerial == 0)
+            throw new InvalidOperationException("The raw map cache is not ready.");
+
+        ScenePackets.ImageFlags flags = SystemInfo.graphicsUVStartsAtTop
+            ? ScenePackets.ImageFlags.FlipY : ScenePackets.ImageFlags.None;
+        var layer = new ScenePackets.Layer
+        {
+            Kind = ScenePackets.LayerKind.CachedMap,
+            Color = packet.AddImage(texturePointer, cacheSerial, Width, Height, flags),
+            Probe = packet.AddImage(whitePointer, cacheSerial, Width, Height, flags),
+            Reference = ScenePackets.NoImage,
+            Depth = ScenePackets.NoImage
+        };
+        layer.Affine[0] = cachedAffine.A;
+        layer.Affine[1] = cachedAffine.B;
+        layer.Affine[2] = cachedAffine.C;
+        layer.Affine[3] = cachedAffine.D;
+        layer.Affine[4] = cachedAffine.E;
+        layer.Affine[5] = cachedAffine.F;
+        packet.AddLayer(layer);
     }
 
     private void ValidateBackgroundCorner(Affine affine)
@@ -680,7 +730,11 @@ internal sealed class MapCoverageCapture
 
         foreach (Auxiliary item in cameras)
         {
-            if (item.Camera != null) item.Camera.targetTexture = null;
+            if (item.Camera != null)
+            {
+                SpaceDebrisDraws.Forget(item.Camera);
+                item.Camera.targetTexture = null;
+            }
 
             if (item.Target != null)
             {
@@ -699,6 +753,7 @@ internal sealed class MapCoverageCapture
 
         released = true;
         texturePointer = 0;
+        whitePointer = 0;
     }
 
     private struct Affine
@@ -959,6 +1014,7 @@ internal sealed class MapCoverageCapture
 
 public sealed class CoverageColorEffect : MonoBehaviour
 {
+    private bool raw;
     private Camera sourceCamera;
     private Camera coverageCamera;
     private readonly List<MonoBehaviour> components = new List<MonoBehaviour>();
@@ -968,8 +1024,9 @@ public sealed class CoverageColorEffect : MonoBehaviour
     private int calls;
     private int completed = -1;
 
-    internal void Bind(Camera camera)
+    internal void Bind(Camera camera, bool raw = false)
     {
+        this.raw = raw;
         sourceCamera = camera;
         coverageCamera = GetComponent<Camera>();
     }
@@ -1121,7 +1178,7 @@ public sealed class CoverageColorEffect : MonoBehaviour
         RenderTexture intermediate = null;
         try
         {
-            if (effects.Count == 0)
+            if (raw || effects.Count == 0)
             {
                 Graphics.Blit(input, output);
             }

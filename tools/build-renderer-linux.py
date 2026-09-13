@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the Linux x64 renderer and camera kernel, optionally running the CPU-only tests.
+"""Build the Linux x64 renderer and camera kernel, with optional CPU tests.
 
 Requires c++, binutils, .NET 10 NativeAOT and the GL, X11, Xext and Xi development
 libraries. Nothing is installed and no game is started. --plan only reports readiness.
@@ -24,6 +24,7 @@ RENDERER_DIR = ROOT / 'src/Smf.Renderer/linux'
 RENDERER_SOURCES = (
     'linux_session.cpp',
     'linux_glx.cpp',
+    'scene_compositor.cpp',
     'glx_source_router.cpp',
     'linux_unity_swap_slot.cpp',
     'camera_bridge.cpp',
@@ -48,6 +49,9 @@ SHARED_HEADERS = (
     'src/Smf.Renderer/common/camera_packets.h',
     'src/Smf.Renderer/common/selection_overlay.h',
     'src/Smf.Renderer/common/wheel_modifiers.h',
+    'src/Smf.Renderer/common/scene_packets.h',
+    'src/Smf.Renderer/common/scene_snapshot.h',
+    'src/Smf.Renderer/common/projection_math.h',
     'src/Smf.Camera/camera_kernel.h',
 )
 NOTICES = ('DOTNET-LICENSE.txt', 'DOTNET-THIRD-PARTY-NOTICES.txt')

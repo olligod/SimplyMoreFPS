@@ -106,6 +106,16 @@ namespace mac {
         if (![NSThread isMainThread] || !window || !layer || !attached || !original_view || layer.superlayer != original) return geometry_reject(1, E_UNEXPECTED);
 
         geometry_failure_reason = 0;
+        NSNumber* screen_number = window.screen.deviceDescription[@"NSScreenNumber"];
+        CGDirectDisplayID display = screen_number ? screen_number.unsignedIntValue : CGMainDisplayID();
+        CGDisplayModeRef mode = CGDisplayCopyDisplayMode(display);
+        double refresh = mode ? CGDisplayModeGetRefreshRate(mode) : 0;
+        if (mode) CGDisplayModeRelease(mode);
+        if (!std::isfinite(refresh) || refresh <= 0) {
+            if (@available(macOS 12.0, *)) refresh = window.screen.maximumFramesPerSecond;
+        }
+        if (!std::isfinite(refresh) || refresh <= 0) refresh = 60;
+        scene_interval_ns.store(uint64_t(std::ceil(1000000000.0 / refresh)), std::memory_order_release);
         NSRect bounds = original_view.bounds;
         double scale = window.backingScaleFactor;
         if (!std::isfinite(scale) || scale <= 0 || bounds.size.width <= 0 || bounds.size.height <= 0) return geometry_reject(2, E_INVALIDARG);

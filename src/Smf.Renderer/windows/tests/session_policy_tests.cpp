@@ -45,11 +45,13 @@ int main() {
     check(!copy_region_fits(UINT32_MAX, 2048, UINT32_MAX, 0, 1, 1), "copy source span cannot wrap");
     check(!copy_region_fits(2048, 2048, 0, 0, 0, 1), "empty source rectangle rejected");
 
-    check(frame_layout_matches(416, 416, 3), "frame version 3 at 416 bytes accepted");
+    check(frame_layout_matches(424, 424, 4), "frame version 4 at 424 bytes accepted");
     check(!frame_layout_matches(336, 336, 1), "obsolete 336 byte frame rejected");
     check(!frame_layout_matches(368, 368, 2), "obsolete 368 byte frame rejected");
     check(!frame_layout_matches(416, 416, 2), "old version cannot reinterpret the cache tail");
     check(!frame_layout_matches(416, 368, 3), "caller size mismatch rejected");
+    check(!frame_layout_matches(416, 416, 3), "frame without scene description rejected");
+    check(!frame_layout_matches(424, 424, 3), "old version cannot reinterpret scene description");
 
     session_frame frame{};
     check(cache_valid(frame), "no-map cache descriptor must be all zero");

@@ -1,5 +1,6 @@
 #pragma once
 #include "linux_core.h"
+#include "../common/scene_packets.h"
 
 namespace linux_session {
 
@@ -9,6 +10,8 @@ namespace linux_session {
         uint32_t name = 0;
         uint32_t width = 0;
         uint32_t height = 0;
+        uint32_t format = 0;
+        uint64_t bytes = 0;
     };
 
     struct slot_storage {
@@ -17,6 +20,8 @@ namespace linux_session {
         uint32_t width = 0;
         uint32_t height = 0;
         texture_storage textures[4]{};
+        texture_storage scene_textures[smf_scene::maximum_images]{};
+        smf_scene::image scene_images[smf_scene::maximum_images]{};
         cache_packet copied_cache{};
         bool cache_valid = false;
 
@@ -24,6 +29,21 @@ namespace linux_session {
             for (const auto& t : textures) {
                 if (t.name) return true;
             }
+            for (const auto& t : scene_textures) {
+                if (t.name) return true;
+            }
+            return false;
+        }
+
+        uint64_t allocated_bytes() const {
+            uint64_t result = 0;
+            for (const auto& texture : textures) if (texture.name) result += texture.bytes;
+            for (const auto& texture : scene_textures) if (texture.name) result += texture.bytes;
+            return result;
+        }
+
+        bool has_scene() const {
+            for (const auto& texture : scene_textures) if (texture.name) return true;
             return false;
         }
 

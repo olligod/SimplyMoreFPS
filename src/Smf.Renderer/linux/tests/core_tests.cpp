@@ -1,4 +1,6 @@
 #include "../linux_core.h"
+#include "../scene_frame.h"
+#include "../scene_budget.h"
 #include <array>
 #include <cassert>
 #include <cmath>
@@ -14,6 +16,48 @@ struct test_packet {
 };
 
 int main() {
+    assert(scene_capacity(0, 0, scene_packet_budget) == storage_admission::ready);
+    assert(scene_capacity(0, 0, scene_packet_budget + 1) == storage_admission::unsupported);
+    assert(scene_capacity(scene_source_budget, 0, 1) == storage_admission::busy);
+    assert(scene_capacity(scene_source_budget, 1, 1) == storage_admission::ready);
+    {
+        pre_gui_packet frame{};
+        assert(valid_pre_gui_flags(frame));
+        frame.flags = pre_gui_map | pre_gui_scene;
+        assert(valid_pre_gui_flags(frame));
+        frame.flags = pre_gui_scene;
+        assert(!valid_pre_gui_flags(frame));
+        frame.flags = 4;
+        assert(!valid_pre_gui_flags(frame));
+        smf_scene::snapshot owned{};
+        frame_packet malformed{};
+        assert(read_scene_frame(malformed, owned) == scene_admission::malformed);
+    }
+    {
+        pose_packet pose{};
+        pose.root_x = 100.125;
+        pose.root_z = 85.25;
+        pose.x = 100.375f;
+        pose.z = 85.125f;
+        pose.orthographic_size = 24;
+        pose.model_revision = 1;
+        pose.epoch = 1;
+        pose.map_id = 0;
+        const affine captured{2, 0, -100.25, 0, -2, 198.25};
+        camera_model model;
+        assert(model.accept(pose, captured, 200, 56));
+        affine desired;
+        double x, z;
+        assert(scene_projection(pose, model, captured, pose.root_x, pose.root_z, 24, desired, x, z));
+        assert(x == pose.x && z == pose.z && std::memcmp(&desired, &captured, sizeof(desired)) == 0);
+        assert(scene_projection(pose, model, captured, pose.root_x + 1, pose.root_z - 2, 12, desired, x, z));
+        assert(x == pose.x + 1 && z == pose.z - 2);
+        affine expected;
+        assert(model.root(pose.root_x + 1, pose.root_z - 2, 12, expected));
+        expected.c -= expected.a * .25;
+        expected.f -= expected.e * -.125;
+        assert(std::memcmp(&desired, &expected, sizeof(desired)) == 0);
+    }
     // Live Pose264 captured at root, ortho 0.5, 2026-09-09. The float 90 degree view
     // rotation leaves -FLT_EPSILON in camera Y; times projection[5] = 2 it must not read as tilt.
     {
@@ -396,7 +440,7 @@ int main() {
     frame.cache.texture = frame.hud_texture;
     assert(!valid_cache(frame, previous));
 
-    assert(sizeof(frame_packet) == 416);
+    assert(sizeof(frame_packet) == 424);
     assert(sizeof(pose_packet) == 264);
     assert(sizeof(cache_packet) == 80);
     std::cout << "PASS: token exhaustion, cancellation ABA, session identity, fence retirement, quarantine, cache/pan/zoom mapping, malformed projection and ABI\n";

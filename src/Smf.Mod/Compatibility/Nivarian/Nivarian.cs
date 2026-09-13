@@ -8,7 +8,7 @@ using Verse;
 namespace SimplyMoreFPS.Compatibility;
 
 // The live FX texture covers the screen. Coverage needs the same particles from its own projection.
-internal sealed class Nivarian : IMapImageEffect
+internal sealed class Nivarian : IMapImageEffect, ISceneImageEffect
 {
     internal const string CompositorName = "Nivarian_Race.Code.EfxCam.NivarianFXCompositor";
 
@@ -21,6 +21,13 @@ internal sealed class Nivarian : IMapImageEffect
     private Action<RenderTexture, RenderTexture>? renderBloom;
     private Material? material;
     private bool applyEffects;
+    private RenderTexture? sceneLive;
+    private RenderTexture? sceneCache;
+    private RenderTexture? sceneBlack;
+    private ulong sceneLivePointer;
+    private ulong sceneCachePointer;
+    private ulong sceneCacheSerial;
+    private ulong sceneMapSerial;
 
     internal Nivarian(MonoBehaviour compositor)
     {
@@ -132,6 +139,7 @@ internal sealed class Nivarian : IMapImageEffect
             UnityEngine.Object.DontDestroyOnLoad(owner);
             coverageCamera = owner.AddComponent<Camera>();
             coverageCamera.enabled = false;
+            SpaceDebrisDraws.Exclude(coverageCamera);
         }
 
         return true;
@@ -198,8 +206,14 @@ internal sealed class Nivarian : IMapImageEffect
 
     public void Dispose()
     {
+        ReleaseTexture(sceneLive);
+        ReleaseTexture(sceneCache);
+        ReleaseTexture(sceneBlack);
+        sceneLive = sceneCache = sceneBlack = null;
+        sceneLivePointer = sceneCachePointer = sceneCacheSerial = sceneMapSerial = 0;
         if (coverageCamera != null)
         {
+            SpaceDebrisDraws.Forget(coverageCamera);
             UnityEngine.Object.Destroy(coverageCamera.gameObject);
         }
 
@@ -210,5 +224,90 @@ internal sealed class Nivarian : IMapImageEffect
 
         coverageCamera = null;
         material = null;
+    }
+
+    public void DescribeScene(ScenePacketBuffer packet, Camera source, Camera coverage, ulong cacheSerial)
+    {
+        if (!applyEffects)
+        {
+            return;
+        }
+
+        if (material == null)
+        {
+            throw new InvalidOperationException("Nivarian scene capture is not prepared.");
+        }
+
+        if (sceneLive == null)
+        {
+            sceneLive = NewSceneTexture(source.pixelWidth, source.pixelHeight);
+            sceneCache = NewSceneTexture(coverage.pixelWidth, coverage.pixelHeight);
+            sceneBlack = NewSceneTexture(coverage.pixelWidth, coverage.pixelHeight);
+            sceneLivePointer = unchecked((ulong)sceneLive.GetNativeTexturePtr().ToInt64());
+            sceneCachePointer = unchecked((ulong)sceneCache.GetNativeTexturePtr().ToInt64());
+        }
+
+        RenderTexture previous = RenderTexture.active;
+        bool srgb = GL.sRGBWrite;
+        try
+        {
+            GL.sRGBWrite = false;
+            material.SetTexture("_FXTex", readTexture(compositor));
+            Graphics.Blit(Texture2D.blackTexture, sceneLive, material);
+            if (sceneMapSerial != cacheSerial)
+            {
+                RenderTexture.active = sceneBlack;
+                GL.Clear(false, true, Color.clear);
+                Render(coverage, sceneBlack!, sceneCache!);
+                sceneMapSerial = cacheSerial;
+                sceneCacheSerial = checked((ulong)Time.frameCount);
+            }
+        }
+        finally
+        {
+            material.SetTexture("_FXTex", null);
+            RenderTexture.active = previous;
+            GL.sRGBWrite = srgb;
+        }
+
+        ScenePackets.ImageFlags flags = SystemInfo.graphicsUVStartsAtTop
+            ? ScenePackets.ImageFlags.FlipY : ScenePackets.ImageFlags.None;
+        packet.AddEffect(new ScenePackets.Effect
+        {
+            Kind = ScenePackets.EffectKind.AdditiveImage,
+            FirstImage = packet.AddImage(sceneLivePointer, checked((ulong)Time.frameCount),
+                (uint)sceneLive.width, (uint)sceneLive.height, flags),
+            SecondImage = packet.AddImage(sceneCachePointer, sceneCacheSerial,
+                (uint)sceneCache!.width, (uint)sceneCache.height, flags)
+        });
+    }
+
+    private static RenderTexture NewSceneTexture(int width, int height)
+    {
+        var texture = new RenderTexture(width, height, 0, RenderTextureFormat.ARGBHalf, RenderTextureReadWrite.Linear)
+        {
+            name = "SMF scene particle effect",
+            hideFlags = HideFlags.HideAndDontSave,
+            filterMode = FilterMode.Point,
+            wrapMode = TextureWrapMode.Clamp
+        };
+        if (texture.Create())
+        {
+            return texture;
+        }
+
+        UnityEngine.Object.Destroy(texture);
+        throw new InvalidOperationException("Nivarian scene texture creation failed.");
+    }
+
+    private static void ReleaseTexture(RenderTexture? texture)
+    {
+        if (texture == null)
+        {
+            return;
+        }
+
+        texture.Release();
+        UnityEngine.Object.Destroy(texture);
     }
 }

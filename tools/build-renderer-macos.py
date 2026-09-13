@@ -30,6 +30,7 @@ RENDERER_SOURCES = (
     'copy_probe.mm',
     'metal_source.mm',
     'metal_worker.mm',
+    'scene_compositor.mm',
     'window_owner.mm',
     'drawable_observer.mm',
     'original_present.mm',

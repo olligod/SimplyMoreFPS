@@ -48,6 +48,7 @@ struct session_frame {
     uint32_t flags, world_dispatches;
     session_pose pose;
     session_cache cache;
+    uint64_t scene_description;
 };
 
 struct session_native_frame {
@@ -94,8 +95,8 @@ static_assert(sizeof(session_pose) == 264 && offsetof(session_pose, root_x) == 2
 static_assert(sizeof(session_command) == 88, "Command88");
 static_assert(sizeof(session_pre_gui) == 64, "PreGui64");
 static_assert(sizeof(session_cache) == 80 && offsetof(session_cache, affine) == 32, "Cache80");
-static_assert(sizeof(session_frame) == 416 && offsetof(session_frame, pose) == 72 &&
-    offsetof(session_frame, cache) == 336, "Frame416 version3");
+static_assert(sizeof(session_frame) == 424 && offsetof(session_frame, pose) == 72 &&
+    offsetof(session_frame, cache) == 336 && offsetof(session_frame, scene_description) == 416, "Frame424 version4");
 static_assert(sizeof(session_native_frame) == 64, "NativeFrame64");
 static_assert(sizeof(session_ack) == 80, "Ack80");
 static_assert(sizeof(session_generation_status) == 128, "Generation128");

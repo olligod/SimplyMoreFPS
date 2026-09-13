@@ -177,8 +177,16 @@ internal static class LifecycleTests
         }
 
         Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Off && core.UserEnabled, "Suspended renderer stays off after complete retirement");
+        Check(!core.Faulted && core.LastFailure == null, "Compatibility suspension does not latch a renderer failure");
         core.SetRenderingAllowed(true);
-        Check(Next(core, Operation.PrepareHiddenGeneration).Session > prepare.Session, "Free camera can start a fresh session");
+        Command resumed = Next(core, Operation.PrepareHiddenGeneration);
+        Check(resumed.Session > prepare.Session, "Compatible rendering starts a fresh session automatically");
+        core.MarkPreparationSubmitted(resumed);
+        PublishFence(core);
+        Reply(core, resumed);
+        Reply(core, Next(core, Operation.ActivateGeneration));
+        Check(!core.AdvanceAtSafeBoundary(true).HasValue && core.State == Phase.Active && core.UserEnabled,
+            "Compatible rendering resumes without an explicit off/on cycle");
 
         core.ReportFailure("fixture failure");
         core.SetRenderingAllowed(false);

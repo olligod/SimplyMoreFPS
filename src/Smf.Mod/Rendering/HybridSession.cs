@@ -206,6 +206,7 @@ public static partial class HybridSession
         session.ScreenMeshes?.Dispose();
         session.PublishSelectionState(true);
         MapCoverageCapture.RemoveHooks();
+        SpaceSceneCapture.RemoveHooks();
         if (session.Scene is IMainSceneLifetime sceneLifetime)
             sceneLifetime.Stop();
         current = null;
@@ -315,6 +316,7 @@ public static partial class HybridSession
         internal bool GpuRetired;
         internal bool Released;
         internal MapCoverageCapture Coverage;
+        internal SpaceSceneCapture Space;
     }
 
     internal sealed partial class Session
@@ -382,6 +384,7 @@ public static partial class HybridSession
                 sceneLifetime.Start(Owner);
             InstallRasterHooks();
             MapCoverageCapture.InstallHooks(OwnerId);
+            SpaceSceneCapture.InstallHooks(OwnerId);
         }
 
         internal void ObserveContext()
@@ -565,6 +568,7 @@ public static partial class HybridSession
                 CaptureRouting = true;
                 PendingSubmission = null;
                 MapCoverageCapture.Select(created.Coverage);
+                SpaceSceneCapture.Select(created.Space);
                 return;
             }
 
@@ -590,6 +594,7 @@ public static partial class HybridSession
                 try
                 {
                     MapCoverageCapture.Select(null);
+                    SpaceSceneCapture.Select(null);
                 }
                 finally
                 {
@@ -634,9 +639,13 @@ public static partial class HybridSession
 
             if (Context.HasMap != 0)
             {
-                generation.Coverage = new MapCoverageCapture(Context,
-                    () => CaptureRouting && ReferenceEquals(Capture, generation) && generation.Context.Equals(Context), Fail);
+                bool space = Verse.Find.CurrentMap.generatorDef.renderWorld;
+                Func<bool> eligible = () => CaptureRouting && ReferenceEquals(Capture, generation) &&
+                    generation.Context.Revision == Context.Revision && generation.Context.Equals(Context);
+                generation.Coverage = new MapCoverageCapture(Context, eligible, Fail, space);
                 generation.Coverage.Create();
+                if (space)
+                    generation.Space = new SpaceSceneCapture(generation.Coverage, eligible, Fail, PremultCopy);
             }
 
             generation.HudPointer = unchecked((ulong)generation.Hud.GetNativeTexturePtr().ToInt64());
@@ -684,6 +693,12 @@ public static partial class HybridSession
                 CaptureRouting = false;
             }
 
+            if (generation.Space != null)
+            {
+                generation.Space.Release();
+                generation.Space = null;
+            }
+
             if (generation.Coverage != null)
             {
                 generation.Coverage.Release();
@@ -726,6 +741,7 @@ public static partial class HybridSession
             try
             {
                 MapCoverageCapture.Select(null);
+                SpaceSceneCapture.Select(null);
             }
             catch (Exception error)
             {
