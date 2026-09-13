@@ -543,7 +543,7 @@ namespace linux_session {
         }
 
         bool copy_layer(slot& s, storage_layer which, GLuint texture, layer& out, uint32_t width, uint32_t height,
-                        bool original = false, bool offscreen_bound = false) {
+                        bool original = false) {
             auto& storage = s.storage.textures[which];
             if (storage.name && (storage.width != width || storage.height != height)) {
                 // The slot is back with its source owner, so no worker samples this storage now.
@@ -558,7 +558,7 @@ namespace linux_session {
             storage.height = height;
             storage.format = GL_RGBA8;
             storage.bytes = uint64_t(width) * height * 4;
-            bool copied = source.copy(texture, storage.name, width, height, original, GL_RGBA8, offscreen_bound);
+            bool copied = source.copy(texture, storage.name, width, height, original, GL_RGBA8);
             if (copied) out.texture = storage.name;
             return copied;
         }
@@ -1411,7 +1411,7 @@ namespace linux_session {
             s->base.width = p.width;
             s->base.height = p.height;
 
-            bool copied = copy_layer(*s, base_storage, 0, s->base, p.width, p.height, true, (p.flags & pre_gui_scene) != 0);
+            bool copied = copy_layer(*s, base_storage, 0, s->base, p.width, p.height, true);
             s->producer = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
             glFlush();
 

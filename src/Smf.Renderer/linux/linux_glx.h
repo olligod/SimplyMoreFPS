@@ -55,7 +55,7 @@ namespace linux_session {
         bool discover(uint32_t width, uint32_t height);
         bool own() const;
         bool copy(GLuint source, GLuint& owned, uint32_t width, uint32_t height, bool original = false,
-                  GLenum format = GL_RGBA8, bool offscreen_bound = false);
+                  GLenum format = GL_RGBA8);
         void release();
     };
 

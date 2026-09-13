@@ -6,7 +6,6 @@
 // Windows build keeps QPC stamps and carry CLOCK_MONOTONIC nanoseconds here.
 namespace linux_session {
 
-    // Scene probes may leave an offscreen FBO bound; the base copy still reads the original drawable.
     enum pre_gui_flags : uint32_t { pre_gui_map = 1, pre_gui_scene = 2 };
 
 #pragma pack(push, 8)

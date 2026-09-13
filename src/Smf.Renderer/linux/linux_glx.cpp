@@ -159,7 +159,7 @@ void main() {
     }
 
     bool source_glx::copy(GLuint source, GLuint& owned, uint32_t width, uint32_t height, bool original,
-                          GLenum copy_format, bool offscreen_bound) {
+                          GLenum copy_format) {
         last_copy = {};
         auto& d = last_copy.words;
         d[0] = 1;
@@ -210,11 +210,11 @@ void main() {
             d[8] = w;
             d[9] = h;
             d[31] |= 2;
-            if ((!offscreen_bound && (before.draw_fbo || before.draw_buffer != GL_BACK)) || w != width || h != height)
+            if ((!before.draw_fbo && before.draw_buffer != GL_BACK) || w != width || h != height)
                 return failure(2);
 
-            // Space probes can leave their FBO bound even after Unity restores its logical target.
-            if (offscreen_bound) glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            // Unity can restore its logical target before rebinding the framebuffer.
+            if (before.draw_fbo) glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 
             GLint samples = 0;
             GLint type = 0;
